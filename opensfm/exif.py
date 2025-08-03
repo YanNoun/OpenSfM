@@ -18,7 +18,7 @@ logger: logging.Logger = logging.getLogger(__name__)
 inch_in_mm: float = 25.4
 cm_in_mm: float = 10
 um_in_mm: float = 0.001
-default_projection: str = "perspective"
+default_projection: str = "brown"
 maximum_altitude: float = 1e4
 
 
@@ -244,7 +244,7 @@ class EXIF:
 
     def extract_projection_type(self) -> str:
         gpano = get_gpano_from_xmp(self.xmp)
-        return gpano.get("GPano:ProjectionType", "perspective")
+        return gpano.get("GPano:ProjectionType", default_projection)
 
     def extract_focal(self) -> Tuple[float, float]:
         make, model = self.extract_make(), self.extract_model()
@@ -734,7 +734,7 @@ def calibration_from_metadata(
     else:
         calib = (
             hard_coded_calibration(metadata)
-            or focal_ratio_calibration(metadata)
+            or focal_xy_calibration(metadata)
             or default_calibration(data)
         )
     if "projection_type" not in calib:
