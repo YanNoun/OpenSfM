@@ -3,29 +3,26 @@ import logging
 from typing import List, Optional
 
 import numpy as np
-from opensfm import multiview, pymap, types
+from opensfm import features, multiview, pymap, types
 from opensfm.dataset import DataSet
 from opensfm import pygeometry
 
-try:
-    import rerun as rr
-except ImportError:
-    raise ImportError(
-        "Rerun is not installed. Install it with: pip install rerun-sdk"
-    )
+import matplotlib.cm as cm
+import rerun as rr
+import rerun.blueprint as rrb
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 # Visualization constants
-GPS_COLOR = [0, 0, 255]
-GCP_OBSERVATION_COLOR = [255, 0, 0]
-GCP_COMPUTED_COLOR = [0, 255, 0]
-GCP_REFERENCE_COLOR = [255, 255, 255]
-GCP_ERROR_COLOR = [255, 0, 0]
-FEATURE_COLOR = [0, 255, 0]
-LABEL_COLOR = [255, 255, 255]
+GPS_COLOR = [100, 180, 255]
+GCP_OBSERVATION_COLOR = [255, 160, 120]
+GCP_COMPUTED_COLOR = [120, 255, 140]
+GCP_REFERENCE_COLOR = [255, 230, 100] 
+GCP_ERROR_COLOR = [255, 100, 100]
+FEATURE_COLOR = [100, 255, 220] 
+LABEL_COLOR = [220, 220, 220] 
 
-SIZE_TIE_POINT = 0.1
+SIZE_TIE_POINT = 0.2
 
 SIZE_GPS_ARROW = 1.0
 SIZE_GPS_RESIDUAL_LINE = 0.05
@@ -40,9 +37,13 @@ SIZE_2D_POINT_FEATURE = 2.0
 
 SIZE_LABEL_SHIFT_SHOT = 0.5
 
-IMAGE_PLANE_DISTANCE = 2.0
+SIZE_MATCHGRAPH_LINE = 0.1
+SIZE_CAMERA_PATH_LINE = 0.5
+
 MAX_IMAGE_WIDTH = 1500
 
+MATCHGRAPH_CMAP = cm.get_cmap("plasma")
+COVERAGE_CMAP = cm.get_cmap("viridis")
 
 def run_dataset(
     data: DataSet,
@@ -86,11 +87,24 @@ def run_dataset(
     # Set up coordinate system (OpenSfM uses East-North-Up)
     rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
 
-    # Center the view on the median of the reconstruction points
-    if reconstruction.points:
-        points = np.array([p.coordinates for p in reconstruction.points.values()])
-        median_center = np.median(points, axis=0)
-        rr.log("world", rr.Transform3D(translation=-median_center))
+    # Create a Spatial3D view to display the scene
+    blueprint = rrb.Blueprint(
+        rrb.Spatial3DView(
+            origin="/WORLD",
+            name="3D Scene",
+            background=[13, 17, 23], # Deep dark gray
+            line_grid=rrb.LineGrid3D(
+                visible=False,
+            ),
+            spatial_information=rrb.SpatialInformation(
+                show_axes=False,
+                show_bounding_box=False,
+            ),
+        ),
+        collapse_panels=False,
+        )
+
+    rr.send_blueprint(blueprint)
 
     # Export reference coordinate system
     if reconstruction.reference:
@@ -109,7 +123,8 @@ def run_dataset(
     _export_cameras(reconstruction)
 
     # Export camera poses (shots)
-    _export_shots(data, reconstruction)
+    _export_shots(data, reconstruction, _compute_image_plane_distance(reconstruction))
+    _export_camera_path(reconstruction)
 
     # Export 3D points
     _export_points(reconstruction)
@@ -120,9 +135,12 @@ def run_dataset(
         _export_gcp(data, reconstruction, gcp)
 
     # Export tracks manager (optional, for visualizing observations)
-    # if data.tracks_exists():
-    #     tracks_manager = data.load_tracks_manager()
-    #     _export_observations(reconstruction, tracks_manager)
+    if data.tracks_exists():
+        tracks_manager = data.load_tracks_manager()
+        # _export_observations(reconstruction, tracks_manager)
+        _export_matchgraph(data, reconstruction, tracks_manager)
+
+    _export_coverage_map(data, reconstruction)
 
     logger.info(f"Rerun export completed: {output_path}")
     logger.info(f"Open with: rerun {output_path}")
@@ -151,6 +169,22 @@ def _get_scaled_dimensions(width: int, height: int) -> tuple[int, int]:
         scale = MAX_IMAGE_WIDTH / width
         return int(width * scale), int(height * scale)
     return width, height
+
+
+def _compute_image_plane_distance(reconstruction: types.Reconstruction) -> float:
+    positions = np.array([shot.pose.get_origin() for shot in reconstruction.shots.values()])
+    if len(positions) < 2:
+        return 2.0
+        
+    try:
+        from scipy.spatial import KDTree
+        tree = KDTree(positions)
+        dists, _ = tree.query(positions, k=5)
+        median_nn_dist = np.median(dists[:, 1])
+        return float(median_nn_dist)
+    except ImportError:
+        logger.warning("Scipy not found, using default image plane distance.")
+        return 2.0
 
 
 def _get_camera_calibration(camera: pygeometry.Camera, width: int, height: int):
@@ -192,7 +226,7 @@ def _export_cameras(reconstruction: types.Reconstruction) -> None:
         )
 
 
-def _export_shots(data: DataSet, reconstruction: types.Reconstruction) -> None:
+def _export_shots(data: DataSet, reconstruction: types.Reconstruction, image_plane_distance: float) -> None:
     """Export camera shots (poses and images)."""
     reference = reconstruction.reference
 
@@ -204,7 +238,34 @@ def _export_shots(data: DataSet, reconstruction: types.Reconstruction) -> None:
             gps_topo = shot.metadata.gps_position.value
             _export_shot_gps(shot, shot_id, gps_topo)
 
-        _export_shot_pinhole(data, shot, shot_id)
+        _export_shot_pinhole(data, shot, shot_id, image_plane_distance)
+
+
+def _export_camera_path(reconstruction: types.Reconstruction) -> None:
+    """Export camera path based on capture time."""
+    shots_with_time = []
+    for shot in reconstruction.shots.values():
+        if shot.metadata and shot.metadata.capture_time.has_value:
+            shots_with_time.append(shot)
+    
+    if len(shots_with_time) < 2:
+        return
+
+    # Sort by capture time
+    shots_with_time.sort(key=lambda x: x.metadata.capture_time.value)
+    
+    points = [shot.pose.get_origin() for shot in shots_with_time]
+    
+    rr.log(
+        "WORLD/PATH",
+        rr.LineStrips3D(
+            [points],
+            colors=[[255, 255, 255]], # White
+            radii=SIZE_CAMERA_PATH_LINE,
+        ),
+        static=True,
+    )
+    logger.info(f"Exported camera path with {len(points)} points")
 
 
 def _export_shot_pose(shot: pymap.Shot, shot_id: str) -> None:
@@ -216,14 +277,11 @@ def _export_shot_pose(shot: pymap.Shot, shot_id: str) -> None:
     # OpenSfM GetRotationMatrix gives camera-to-world rotation
     R_world_from_camera = R.T  # Transpose to get world-from-camera
 
-    # Strip spaces from camera_id for clean entity paths
-    camera_id_clean = shot.camera.id.replace(" ", "_")
-
     # Log camera pose with integer sequence ID
     sequence_id = _get_shot_sequence_id(shot_id)
     rr.set_time_sequence("shot", sequence_id)
     rr.log(
-        f"world/cameras/{camera_id_clean}/shots/{shot_id}/pose",
+        f"WORLD/SHOTS/{shot_id}",
         rr.Transform3D(
             translation=t,
             mat3x3=R_world_from_camera,
@@ -233,7 +291,7 @@ def _export_shot_pose(shot: pymap.Shot, shot_id: str) -> None:
 
     labels_shift = np.array([0, 0, SIZE_LABEL_SHIFT_SHOT])  # Shift labels above targets
     rr.log(
-        f"world/cameras/{camera_id_clean}/shots/{shot_id}/pose",
+        f"WORLD/SHOTS/{shot_id}",
         rr.Points3D(
             positions=labels_shift,
             labels=[shot_id],
@@ -244,21 +302,20 @@ def _export_shot_pose(shot: pymap.Shot, shot_id: str) -> None:
     )
 
 
-def _export_shot_pinhole(data: DataSet, shot: pymap.Shot, shot_id: str) -> None:
+def _export_shot_pinhole(data: DataSet, shot: pymap.Shot, shot_id: str, image_plane_distance: float) -> None:
     # Create pinhole camera for image projection
     width = int(shot.camera.width)
     height = int(shot.camera.height)
     width, height = _get_scaled_dimensions(width, height)
     fx, fy, cx, cy = _get_camera_calibration(shot.camera, width, height)
 
-    camera_id_clean = shot.camera.id.replace(" ", "_")
     rr.log(
-        f"world/cameras/{camera_id_clean}/shots/{shot_id}/pose/pinhole",
+        f"WORLD/SHOTS/{shot_id}/CAMERA",
         rr.Pinhole(
             resolution=[width, height],
             focal_length=[fx, fy],
             principal_point=[cx, cy],
-            image_plane_distance=IMAGE_PLANE_DISTANCE,
+            image_plane_distance=image_plane_distance,
         ),
     )
 
@@ -272,7 +329,7 @@ def _export_shot_pinhole(data: DataSet, shot: pymap.Shot, shot_id: str) -> None:
             image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
 
         rr.log(
-            f"world/cameras/{camera_id_clean}/shots/{shot_id}/pose/pinhole/image",
+            f"WORLD/SHOTS/{shot_id}/CAMERA/IMAGE",
             rr.Image(image).compress(jpeg_quality=50),
         )
     except Exception as e:
@@ -284,8 +341,8 @@ def _export_shot_gps(
     shot_id: str,
     gps_topo: np.ndarray,
 ) -> None:
-    camera_id_clean = shot.camera.id.replace(" ", "_")
-    base_path = f"world/cameras/{camera_id_clean}/shots/{shot_id}/gps"
+
+    base_path = f"WORLD/GPS/{shot_id}/"
 
     arrow_size = SIZE_GPS_ARROW
     arrow_radii = arrow_size / 8.0
@@ -296,7 +353,7 @@ def _export_shot_gps(
     vector = np.array([0, 0, -arrow_length])
 
     rr.log(
-        f"{base_path}/position",
+        f"{base_path}/POSITION",
         rr.Arrows3D(
             origins=[origin],
             vectors=[vector],
@@ -307,7 +364,7 @@ def _export_shot_gps(
     )
 
     rr.log(
-        f"{base_path}/residual",
+        f"{base_path}/RESIDUAL",
         rr.LineStrips3D(
             [[shot.pose.get_origin(), gps_topo]],
             colors=[GPS_COLOR],  # Blue
@@ -339,7 +396,7 @@ def _export_points(reconstruction: types.Reconstruction) -> None:
 
     # Log all points at once for efficiency
     rr.log(
-        "world/points/automatic",
+        "WORLD/POINTS",
         rr.Points3D(
             positions=np.array(positions),
             colors=np.array(colors, dtype=np.uint8),
@@ -421,7 +478,7 @@ def _export_single_gcp_geometry(
     reference_pos: np.ndarray,
     computed_pos: Optional[np.ndarray],
 ) -> None:
-    base_path = f"world/gcp/{gcp_id}"
+    base_path = f"WORLD/GCP/{gcp_id}"
 
     # Target dimensions (1m x 1m target)
     target_size = SIZE_GCP_TARGET
@@ -440,7 +497,7 @@ def _export_single_gcp_geometry(
     colors = [color] * 2
 
     rr.log(
-        f"{base_path}/marker",
+        f"{base_path}/TARGET",
         rr.Boxes3D(
             centers=centers,
             half_sizes=half_sizes,
@@ -452,7 +509,7 @@ def _export_single_gcp_geometry(
 
     # Outline
     rr.log(
-        f"{base_path}/outline",
+        f"{base_path}/OUTLINE",
         rr.Boxes3D(
             centers=[pos_np],
             half_sizes=[[target_size / 2.0, target_size / 2.0, thickness]],
@@ -466,7 +523,7 @@ def _export_single_gcp_geometry(
     # Label
     labels_shift = np.array([0, 0, target_size])
     rr.log(
-        f"{base_path}/label",
+        f"{base_path}",
         rr.Points3D(
             positions=[pos_np + labels_shift],
             labels=[gcp_id],
@@ -484,7 +541,7 @@ def _export_single_gcp_geometry(
         vector = np.array([0, 0, -arrow_length])
 
         rr.log(
-            f"{base_path}/computed",
+            f"{base_path}/COMPUTED",
             rr.Arrows3D(
                 origins=[origin],
                 vectors=[vector],
@@ -496,7 +553,7 @@ def _export_single_gcp_geometry(
 
         # Residual line
         rr.log(
-            f"{base_path}/residual",
+            f"{base_path}/RESIDUAL",
             rr.LineStrips3D(
                 [[computed_pos, reference_pos]],
                 colors=[GCP_COMPUTED_COLOR],
@@ -558,3 +615,208 @@ def _export_observations(
             )
 
     logger.info(f"Exported observations for {len(track_ids)} tracks")
+
+
+def _export_matchgraph(
+    data: DataSet,
+    reconstruction: types.Reconstruction,
+    tracks_manager: pymap.TracksManager,
+) -> None:
+    """Export match graph connectivity."""
+    logger.info("Exporting match graph...")
+    
+    all_shots = list(reconstruction.shots.keys())
+    all_points = list(reconstruction.points.keys())
+    
+    # Compute connectivity
+    connectivity = tracks_manager.get_all_pairs_connectivity(all_shots, all_points)
+    if not connectivity:
+        return
+
+    all_values = list(connectivity.values())
+    if not all_values:
+        return
+        
+    lowest = np.percentile(all_values, 5)
+    highest = np.percentile(all_values, 95)
+    
+    lines = []
+    colors = []
+
+    min_inliers = data.config.get("resection_min_inliers", 15)
+
+    for (node1, node2), edge in connectivity.items():
+        if edge < 5 * min_inliers:
+            continue
+            
+        if node1 not in reconstruction.shots or node2 not in reconstruction.shots:
+            continue
+            
+        shot1 = reconstruction.shots[node1]
+        shot2 = reconstruction.shots[node2]
+        
+        p1 = shot1.pose.get_origin()
+        p2 = shot2.pose.get_origin()
+        
+        # Normalize edge weight for color mapping
+        c_val = max(0.0, min(1.0, 1.0 - (float(edge) - lowest) / (highest - lowest + 1e-6)))
+        rgba = MATCHGRAPH_CMAP(1.0 - c_val)
+        
+        lines.append([p1, p2])
+        colors.append([int(c * 255) for c in rgba[:3]])
+
+    if lines:
+        rr.log(
+            "WORLD/STATS/MATCHGRAPH",
+            rr.LineStrips3D(
+                lines,
+                colors=colors,
+                radii=SIZE_MATCHGRAPH_LINE,
+            ),
+            static=True,
+        )
+        logger.info(f"Exported match graph with {len(lines)} edges")
+
+
+def _export_coverage_map(
+    data: DataSet,
+    reconstruction: types.Reconstruction,
+) -> None:
+    """Export coverage map as a tessellated quad."""
+    logger.info("Exporting coverage map...")
+    
+    if not reconstruction.points:
+        return
+
+    try:
+        from scipy.spatial import Delaunay
+    except ImportError:
+        logger.warning("Scipy not found, skipping coverage map triangulation.")
+        return
+
+    # 1. Compute Bounding Box
+    points = np.array([p.coordinates for p in reconstruction.points.values()])
+    if len(points) == 0:
+        return
+    
+    min_pt = np.percentile(points, 1, axis=0)
+    max_pt = np.percentile(points, 99, axis=0)
+    median_z = np.median(points[:, 2])
+
+    # Add some margin
+    margin_ratio = 0.1
+    extent = max_pt - min_pt
+    min_pt -= extent * margin_ratio
+    max_pt += extent * margin_ratio
+    
+    # 2. Generate Vertices from Frustums
+    vertices = []
+    
+    for shot in reconstruction.shots.values():
+        w = shot.camera.width
+        h = shot.camera.height
+        
+        m = 0.01
+        n_steps = 10
+        steps = np.linspace(0, 1, n_steps)
+        steps = m + steps * (1 - 2 * m)
+        
+        xs = w * steps
+        ys = h * steps
+        pixels = features.normalized_image_coordinates(np.array([[x, y] for y in ys for x in xs]), w, h)
+        
+        # Transform bearings to world frame
+        # pose is World -> Camera. Rotation part R.
+        bearings = shot.camera.pixel_bearing_many(pixels)
+        R_wc = shot.pose.get_rotation_matrix().T
+        bearings_world = bearings @ R_wc.T
+        
+        origin = shot.pose.get_origin()
+        
+        for direction in bearings_world:
+            # Intersect with Z = median_z
+            # P = O + t * D
+            # median_z = O_z + t * D_z  => t = (median_z - O_z) / D_z
+            
+            if abs(direction[2]) < 1e-6:
+                continue
+                
+            t = (median_z - origin[2]) / direction[2]
+            if t <= 0: # Behind camera or camera is inside plane
+                continue
+                
+            p_ground = origin + t * direction
+            
+            # Check bounds
+            if (p_ground[0] >= min_pt[0] and p_ground[0] <= max_pt[0] and
+                p_ground[1] >= min_pt[1] and p_ground[1] <= max_pt[1]):
+                vertices.append(p_ground)
+
+    if not vertices:
+        logger.warning("No frustum intersections found within bounds.")
+        return
+
+    # Remove duplicates/close points to avoid Delaunay issues
+    #vertices = np.unique(np.round(np.array(vertices), 3), axis=0)
+    
+    if len(vertices) < 3:
+        return
+
+    # 3. Delaunay Triangulation
+    vertices = np.array(vertices)
+    tri = Delaunay(vertices[:, :2])
+    indices = tri.simplices
+    
+    # 4. Compute Visibility
+    counts = np.zeros(len(vertices), dtype=int)
+    
+    for shot in reconstruction.shots.values():
+        # Transform to camera frame
+        p_cam = shot.pose.transform_many(vertices)
+        
+        # Check if in front of camera (Z > 0)
+        valid_z = p_cam[:, 2] > 0
+        indices_valid_z = np.where(valid_z)[0]
+        
+        if len(indices_valid_z) == 0:
+            continue
+            
+        p_cam_valid = p_cam[indices_valid_z]
+        projections = shot.camera.project_many(p_cam_valid)
+        
+        # Convert to pixels
+        w = shot.camera.width
+        h = shot.camera.height
+        normalizer = max(w, h)
+        
+        px = projections[:, 0] * normalizer + w / 2.0
+        py = projections[:, 1] * normalizer + h / 2.0
+        
+        # Check bounds
+        in_view = (px >= 0) & (px < w) & (py >= 0) & (py < h)
+        
+        # Update counts
+        counts[indices_valid_z[in_view]] += 1
+    
+    # 5. Colorize
+    # Cap between 2 and 5
+    min_count = 0.0
+    max_count = 20.0
+    
+    norm_counts = np.clip(counts, min_count, max_count)
+    norm_counts = (norm_counts - min_count) / (max_count - min_count)
+    
+    colors = COVERAGE_CMAP(norm_counts) # RGBA
+    vertex_colors = (colors[:, :3] * 255).astype(np.uint8)
+
+    # 6. Log
+    rr.log(
+        "WORLD/STATS/COVERAGE",
+        rr.Mesh3D(
+            vertex_positions=vertices,
+            vertex_colors=vertex_colors,
+            triangle_indices=indices,
+        ),
+        static=True
+    )
+    logger.info(f"Exported coverage map with {len(vertices)} vertices")
