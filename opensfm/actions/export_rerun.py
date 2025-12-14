@@ -1,74 +1,698 @@
 # pyre-strict
 import logging
-from typing import List, Optional
+from abc import ABC, abstractmethod
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple, Any
+import base64
+import os
 
 import numpy as np
-from opensfm import features, multiview, pymap, types
+from opensfm import features, multiview, pymap, types, io
 from opensfm.dataset import DataSet
 from opensfm import pygeometry
 
 import matplotlib.cm as cm
 import rerun as rr
 import rerun.blueprint as rrb
+from scipy.spatial import Delaunay
 
 logger: logging.Logger = logging.getLogger(__name__)
 
-# Visualization constants
+# --- Constants ---
+
+# Colors
 GPS_COLOR = [100, 180, 255]
-GCP_OBSERVATION_COLOR = [255, 160, 120]
 GCP_COMPUTED_COLOR = [120, 255, 140]
-GCP_REFERENCE_COLOR = [255, 230, 100] 
+GCP_REFERENCE_COLOR = [255, 230, 100]
 GCP_ERROR_COLOR = [255, 100, 100]
-FEATURE_COLOR = [100, 255, 220] 
-LABEL_COLOR = [220, 220, 220] 
+FEATURE_COLOR = [100, 255, 220]
+LABEL_COLOR = [220, 220, 220]
+CAMERA_PATH_COLOR = [255, 255, 255]
 
+# Sizes & Dimensions
 SIZE_TIE_POINT = 0.2
-
 SIZE_GPS_ARROW = 1.0
 SIZE_GPS_RESIDUAL_LINE = 0.05
-
 SIZE_GCP_TARGET = 2.0
 SIZE_GCP_THICKNESS = 0.05
+SIZE_GCP_2D_THICKNESS = 0.5
 SIZE_GCP_COMPUTED_ARROW = 0.1
 SIZE_GCP_RESIDUAL_LINE = 0.02
-
 SIZE_2D_POINT_GCP = 5.0
 SIZE_2D_POINT_FEATURE = 2.0
-
 SIZE_LABEL_SHIFT_SHOT = 0.5
-
 SIZE_MATCHGRAPH_LINE = 0.1
 SIZE_CAMERA_PATH_LINE = 0.5
+SIZE_GCP_2D_BOX_HALF = 5.0
+SIZE_GCP_2D_OFFSET = 5.0
 
+# Configuration
 MAX_IMAGE_WIDTH = 1500
+IMAGE_COMPRESSION_QUALITY = 50
+DEFAULT_IMAGE_PLANE_DISTANCE = 2.0
+KNN_FOR_SCALE = 5
+MATCHGRAPH_MIN_INLIERS_FACTOR = 5
+COVERAGE_GRID_STEPS = 10
+COVERAGE_MARGIN = 0.01
+COVERAGE_EXTENT_MARGIN = 0.1
+COVERAGE_MIN_COUNT = 0.0
+COVERAGE_MAX_COUNT = 20.0
 
+# Colormaps
 MATCHGRAPH_CMAP = cm.get_cmap("plasma")
 COVERAGE_CMAP = cm.get_cmap("viridis")
+
+
+# --- Abstractions ---
+
+class Drawer(ABC):
+    """Abstract base class for visualization backends."""
+
+    @abstractmethod
+    def init(self, title: str, output_path: str) -> None:
+        pass
+
+    @abstractmethod
+    def set_time(self, sequence_id: int) -> None:
+        pass
+
+    @abstractmethod
+    def log_shot(
+        self,
+        shot_id: str,
+        pose: pygeometry.Pose,
+        camera: pygeometry.Camera,
+        image: Optional[np.ndarray],
+        image_plane_distance: float,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def log_gps(
+        self,
+        shot_id: str,
+        pose: pygeometry.Pose,
+        gps_topo: np.ndarray,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def log_gcp_2d_observations(
+        self,
+        shot_id: str,
+        refs: List[Tuple[float, float]],
+        comps: List[Tuple[float, float]],
+        labels_refs: List[str],
+        labels_comps: List[str],
+        gcp_3d_errors: Dict[str, float],
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def log_points(self, positions: np.ndarray, colors: np.ndarray) -> None:
+        pass
+
+    @abstractmethod
+    def log_camera_path(self, points: List[np.ndarray]) -> None:
+        pass
+
+    @abstractmethod
+    def log_gcp_3d(
+        self,
+        gcp_id: str,
+        reference_pos: np.ndarray,
+        computed_pos: Optional[np.ndarray],
+        error: float = -1.0,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def log_matchgraph(self, lines: List[List[np.ndarray]], colors: List[List[int]]) -> None:
+        pass
+
+    @abstractmethod
+    def log_coverage_map(
+        self,
+        vertices: np.ndarray,
+        colors: np.ndarray,
+        indices: np.ndarray,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def log_reference_lla(self, lat: float, lon: float, alt: float) -> None:
+        pass
+
+    @abstractmethod
+    def log_stats_camera_models(self, stats: Dict[str, Any], data: DataSet) -> None:
+        pass
+
+    @abstractmethod
+    def log_stats_summary(self, stats: Dict[str, Any]) -> None:
+        pass
+
+    @abstractmethod
+    def log_stats_gps_bias(self, stats: Dict[str, Any]) -> None:
+        pass
+
+    @abstractmethod
+    def setup_blueprint(self) -> None:
+        pass
+
+
+class RerunDrawer(Drawer):
+    """Concrete implementation for Rerun visualization."""
+
+    def init(self, title: str, output_path: str) -> None:
+        rr.init(title, spawn=False)
+        rr.save(output_path)
+        rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
+
+    def setup_blueprint(self) -> None:
+        blueprint = rrb.Blueprint(
+            rrb.Vertical(
+                rrb.Horizontal(
+                    rrb.Spatial3DView(
+                        origin="/WORLD",
+                        name="3D Scene",
+                        background=[13, 17, 23],  # Deep dark gray
+                        line_grid=rrb.LineGrid3D(visible=False),
+                        spatial_information=rrb.SpatialInformation(
+                            show_axes=False,
+                            show_bounding_box=False,
+                        ),
+                    ),
+                    rrb.Spatial2DView(
+                        origin="/SHOTS",
+                        name="Image View",
+                    ),
+                ),
+                rrb.Horizontal(
+                    rrb.TextDocumentView(origin="/STATS/SUMMARY", name="Summary"),
+                    rrb.TextDocumentView(origin="/STATS/CAMERAS", name="Camera Models"),
+                    rrb.TextDocumentView(origin="/STATS/GPS", name="GPS/GCP Details"),
+                ),
+                row_shares=[5, 2],
+            ),
+            collapse_panels=True,
+        )
+        rr.send_blueprint(blueprint)
+
+    def set_time(self, sequence_id: int) -> None:
+        rr.set_time_sequence("SHOTS", sequence_id)
+
+    def log_shot(
+        self,
+        shot_id: str,
+        pose: pygeometry.Pose,
+        camera: pygeometry.Camera,
+        image: Optional[np.ndarray],
+        image_plane_distance: float,
+    ) -> None:
+        # Pose
+        t = pose.get_origin()
+        R_world_from_camera = pose.get_rotation_matrix().T
+        
+        rr.log(
+            f"WORLD/SHOTS/{shot_id}",
+            rr.Transform3D(
+                translation=t,
+                mat3x3=R_world_from_camera,
+                from_parent=False,
+            ),
+        )
+        
+        labels_shift = np.array([0, 0, SIZE_LABEL_SHIFT_SHOT])
+        rr.log(
+            f"WORLD/SHOTS/{shot_id}",
+            rr.Points3D(
+                positions=labels_shift,
+                labels=[shot_id],
+                radii=0.0,
+                colors=[LABEL_COLOR],
+            ),
+            static=True,
+        )
+
+        # Pinhole & Image
+        width = int(camera.width)
+        height = int(camera.height)
+        width, height = _get_scaled_dimensions(width, height)
+        fx, fy, cx, cy = _get_camera_calibration(camera, width, height)
+
+        rr.log(
+            f"WORLD/SHOTS/{shot_id}/CAMERA",
+            rr.Pinhole(
+                resolution=[width, height],
+                focal_length=[fx, fy],
+                principal_point=[cx, cy],
+                image_plane_distance=image_plane_distance,
+            ),
+        )
+
+        if image is not None:
+            img_compressed = rr.Image(image).compress(jpeg_quality=IMAGE_COMPRESSION_QUALITY)
+            rr.log(f"WORLD/SHOTS/{shot_id}/CAMERA/IMAGE", img_compressed)
+            rr.log(f"SHOTS/IMAGE", img_compressed)
+
+    def log_gps(
+        self,
+        shot_id: str,
+        pose: pygeometry.Pose,
+        gps_topo: np.ndarray,
+    ) -> None:
+        base_path = f"WORLD/GPS/{shot_id}/"
+        origin = gps_topo.copy()
+        origin[2] += SIZE_GPS_ARROW
+        vector = np.array([0, 0, -SIZE_GPS_ARROW])
+
+        rr.log(
+            f"{base_path}/POSITION",
+            rr.Arrows3D(
+                origins=[origin],
+                vectors=[vector],
+                colors=[GPS_COLOR],
+                radii=SIZE_GPS_ARROW / 8.0,
+            ),
+            static=True,
+        )
+        rr.log(
+            f"{base_path}/RESIDUAL",
+            rr.LineStrips3D(
+                [[pose.get_origin(), gps_topo]],
+                colors=[GPS_COLOR],
+                radii=SIZE_GPS_RESIDUAL_LINE,
+            ),
+            static=True,
+        )
+
+    def log_gcp_2d_observations(
+        self,
+        shot_id: str,
+        refs: List[Tuple[float, float]],
+        comps: List[Tuple[float, float]],
+        labels_refs: List[str],
+        labels_comps: List[str],
+        gcp_3d_errors: Dict[str, float],
+    ) -> None:
+        # Reference: Checkerboard
+        if refs:
+            box_centers = []
+            box_half_sizes = []
+            box_colors = []
+            outline_centers = []
+            outline_half_sizes = []
+            outline_colors = []
+
+            q_half = SIZE_GCP_2D_BOX_HALF
+            offset = SIZE_GCP_2D_OFFSET
+
+            for (x, y) in refs:
+                # Top-Left quadrant
+                box_centers.append([x - offset, y - offset])
+                box_half_sizes.append([q_half, q_half])
+                box_colors.append(GCP_REFERENCE_COLOR)
+                # Bottom-Right quadrant
+                box_centers.append([x + offset, y + offset])
+                box_half_sizes.append([q_half, q_half])
+                box_colors.append(GCP_REFERENCE_COLOR)
+                # Outline
+                outline_centers.append([x, y])
+                outline_half_sizes.append([q_half * 2, q_half * 2])
+                outline_colors.append(GCP_REFERENCE_COLOR)
+
+            rr.log(
+                f"SHOTS/IMAGE/GCP/REFERENCE",
+                rr.Boxes2D(
+                    centers=box_centers,
+                    half_sizes=box_half_sizes,
+                    colors=box_colors,
+                    radii=SIZE_GCP_2D_THICKNESS,
+                ),
+            )
+            rr.log(
+                f"SHOTS/IMAGE/GCP/REFERENCE/OUTLINE",
+                rr.Boxes2D(
+                    centers=outline_centers,
+                    half_sizes=outline_half_sizes,
+                    colors=outline_colors,
+                    radii=SIZE_GCP_2D_THICKNESS,
+                ),
+            )
+            rr.log(
+                f"SHOTS/IMAGE/GCP/REFERENCE/LABELS",
+                rr.Points2D(
+                    refs,
+                    labels=labels_refs,
+                    radii=0,
+                    colors=LABEL_COLOR
+                )
+            )
+        else:
+            rr.log(f"SHOTS/IMAGE/GCP/REFERENCE", rr.Clear(recursive=True))
+            rr.log(f"SHOTS/IMAGE/GCP/REFERENCE/OUTLINE", rr.Clear(recursive=True))
+            rr.log(f"SHOTS/IMAGE/GCP/REFERENCE/LABELS", rr.Clear(recursive=True))
+
+        # Computed: Arrow
+        if comps:
+            # Match computed to reference to draw arrows
+            ref_map = {label: pos for label, pos in zip(labels_refs, refs)}
+            origins = []
+            vectors = []
+            valid_labels = []
+
+            for label, comp_pos in zip(labels_comps, comps):
+                if label in ref_map:
+                    ref_pos = ref_map[label]
+                    vec = [comp_pos[0] - ref_pos[0], comp_pos[1] - ref_pos[1]]
+                    origins.append(ref_pos)
+                    vectors.append(vec)
+
+                    # Log the error as label
+                    error_3d = gcp_3d_errors.get(label, -1.0)
+                    if error_3d >= 0:
+                        valid_labels.append(f"{label}: {error_3d:.3f}m")
+                    else:
+                        valid_labels.append(label)
+            
+            if origins:
+                rr.log(
+                    f"SHOTS/IMAGE/GCP/COMPUTED",
+                    rr.Arrows2D(
+                        origins=origins,
+                        vectors=vectors,
+                        colors=[GCP_COMPUTED_COLOR],
+                        labels=valid_labels,
+                        radii=SIZE_GCP_2D_THICKNESS,
+                    ),
+                )
+            else:
+                rr.log(f"SHOTS/IMAGE/GCP/COMPUTED", rr.Clear(recursive=True))
+        else:
+            rr.log(f"SHOTS/IMAGE/GCP/COMPUTED", rr.Clear(recursive=True))
+
+    def log_points(self, positions: np.ndarray, colors: np.ndarray) -> None:
+        rr.log(
+            "WORLD/POINTS",
+            rr.Points3D(
+                positions=positions,
+                colors=colors,
+                radii=SIZE_TIE_POINT,
+            ),
+            static=True,
+        )
+
+    def log_camera_path(self, points: List[np.ndarray]) -> None:
+        rr.log(
+            "WORLD/PATH",
+            rr.LineStrips3D(
+                [points],
+                colors=[CAMERA_PATH_COLOR],
+                radii=SIZE_CAMERA_PATH_LINE,
+            ),
+            static=True,
+        )
+
+    def log_gcp_3d(
+        self,
+        gcp_id: str,
+        reference_pos: np.ndarray,
+        computed_pos: Optional[np.ndarray],
+        error: float = -1.0,
+    ) -> None:
+        base_path = f"WORLD/GCP/{gcp_id}"
+        quad_r = SIZE_GCP_TARGET / 4.0
+        thickness = SIZE_GCP_THICKNESS
+        pos_np = np.array(reference_pos)
+        color = GCP_REFERENCE_COLOR if computed_pos is not None else GCP_ERROR_COLOR
+
+        # Checkerboard
+        centers = [
+            pos_np + [-quad_r, quad_r, 0],
+            pos_np + [quad_r, -quad_r, 0]
+        ]
+        half_sizes = [[quad_r, quad_r, thickness]] * 2
+        
+        rr.log(
+            f"{base_path}/TARGET",
+            rr.Boxes3D(
+                centers=centers,
+                half_sizes=half_sizes,
+                colors=[color] * 2,
+                fill_mode="solid",
+            ),
+            static=True,
+        )
+        rr.log(
+            f"{base_path}/OUTLINE",
+            rr.Boxes3D(
+                centers=[pos_np],
+                half_sizes=[[SIZE_GCP_TARGET / 2.0, SIZE_GCP_TARGET / 2.0, thickness]],
+                colors=[color],
+                radii=thickness,
+                fill_mode="major_wireframe",
+            ),
+            static=True,
+        )
+
+        label = gcp_id
+        if error >= 0:
+            label = f"{gcp_id}: {error:.3f}m"
+
+        rr.log(
+            f"{base_path}",
+            rr.Points3D(
+                positions=[pos_np + [0, 0, SIZE_GCP_TARGET]],
+                labels=[label],
+                radii=0.0,
+                colors=[LABEL_COLOR],
+            ),
+            static=True,
+        )
+
+        if computed_pos is not None:
+            rr.log(
+                f"{base_path}/COMPUTED",
+                rr.Arrows3D(
+                    origins=[reference_pos],
+                    vectors=[computed_pos - reference_pos],
+                    colors=[GCP_COMPUTED_COLOR],
+                    radii=SIZE_GCP_COMPUTED_ARROW,
+                ),
+                static=True,
+            )
+
+    def log_matchgraph(self, lines: List[List[np.ndarray]], colors: List[List[int]]) -> None:
+        rr.log(
+            "WORLD/STATS/MATCHGRAPH",
+            rr.LineStrips3D(
+                lines,
+                colors=colors,
+                radii=SIZE_MATCHGRAPH_LINE,
+            ),
+            static=True,
+        )
+
+    def log_coverage_map(
+        self,
+        vertices: np.ndarray,
+        colors: np.ndarray,
+        indices: np.ndarray,
+    ) -> None:
+        rr.log(
+            "WORLD/STATS/COVERAGE",
+            rr.Mesh3D(
+                vertex_positions=vertices,
+                vertex_colors=colors,
+                triangle_indices=indices,
+            ),
+            static=True,
+        )
+
+    def log_reference_lla(self, lat: float, lon: float, alt: float) -> None:
+        rr.log(
+            "world/reference",
+            rr.TextDocument(
+                f"Reference LLA:\n"
+                f"Latitude: {lat:.6f}°\n"
+                f"Longitude: {lon:.6f}°\n"
+                f"Altitude: {alt:.2f}m",
+            ),
+        )
+
+    def log_stats_camera_models(self, stats: Dict[str, Any], data: DataSet) -> None:
+        if "camera_errors" not in stats:
+            return
+
+        md = "# Camera Models Details\n\n"
+        
+        for camera, params in stats["camera_errors"].items():
+            md += f"## Camera: {camera}\n"
+            
+            initial = params.get("initial_values", {})
+            optimized = params.get("optimized_values", {})
+            
+            # Collect all parameter names
+            keys = sorted(list(set(initial.keys()) | set(optimized.keys())))
+            
+            md += "| State | " + " | ".join(keys) + " |\n"
+            md += "| --- | " + " | ".join(["---"] * len(keys)) + " |\n"
+            
+            # Initial values row
+            row_init = "| Initial |"
+            for k in keys:
+                val = initial.get(k, "N/A")
+                if isinstance(val, float): val = f"{val:.4f}"
+                row_init += f" {val} |"
+            md += row_init + "\n"
+
+            # Optimized values row
+            row_opt = "| Optimized |"
+            for k in keys:
+                val = optimized.get(k, "N/A")
+                if isinstance(val, float): val = f"{val:.4f}"
+                row_opt += f" {val} |"
+            md += row_opt + "\n\n"
+
+            # Embed residual and heatmap images
+            sanitized_id = camera.replace("/", "_")
+            res_path = os.path.join(data.data_path, "stats", f"residuals_{sanitized_id}.png")
+            heat_path = os.path.join(data.data_path, "stats", f"heatmap_{sanitized_id}.png")
+            
+            res_b64 = None
+            if data.io_handler.isfile(res_path):
+                try:
+                    with data.io_handler.open_rb(res_path) as f:
+                        res_b64 = base64.b64encode(f.read()).decode("utf-8")
+                except Exception as e:
+                    logger.warning(f"Failed to embed residual image for {camera}: {e}")
+
+            heat_b64 = None
+            if data.io_handler.isfile(heat_path):
+                try:
+                    with data.io_handler.open_rb(heat_path) as f:
+                        heat_b64 = base64.b64encode(f.read()).decode("utf-8")
+                except Exception as e:
+                    logger.warning(f"Failed to embed heatmap image for {camera}: {e}")
+
+            if res_b64 or heat_b64:
+                md += "| Residuals | Heatmap |\n"
+                md += "| :---: | :---: |\n"
+                c1 = f"![Residuals](data:image/png;base64,{res_b64})" if res_b64 else ""
+                c2 = f"![Heatmap](data:image/png;base64,{heat_b64})" if heat_b64 else ""
+                md += f"| {c1} | {c2} |\n\n"
+
+        rr.log("STATS/CAMERAS", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN), static=True)
+
+    def log_stats_summary(self, stats: Dict[str, Any]) -> None:
+        md = "# Processing Summary\n\n"
+
+        # Dataset Summary
+        if "processing_statistics" in stats:
+            ps = stats["processing_statistics"]
+            md += "## Dataset\n"
+            md += f"- **Date**: {ps.get('date', 'N/A')}\n"
+            if "area" in ps:
+                md += f"- **Area Covered**: {ps['area']/1e6:.6f} km²\n"
+            if "steps_times" in ps:
+                if "Total Time" in ps["steps_times"]:
+                    md += f"- **Total Time**: {ps['steps_times']['Total Time']:.2f} s\n"
+
+                md += "\n### Processing Time Details\n"
+                md += "| Step | Time |\n"
+                md += "| --- | --- |\n"
+                for step, time in ps["steps_times"].items():
+                    if step == "Total Time":
+                        continue
+                    md += f"| {step} | {time:.2f} s |\n"
+            md += "\n"
+
+        # Reconstruction Summary
+        if "reconstruction_statistics" in stats:
+            rs = stats["reconstruction_statistics"]
+            rec_shots = rs.get("reconstructed_shots_count", 0)
+            init_shots = rs.get("initial_shots_count", 0)
+            rec_points = rs.get("reconstructed_points_count", 0)
+            init_points = rs.get("initial_points_count", 0)
+            
+            ratio_shots = rec_shots / init_shots * 100 if init_shots > 0 else 0
+            ratio_points = rec_points / init_points * 100 if init_points > 0 else 0
+
+            md += "## Reconstruction\n"
+            md += f"- **Images**: {rec_shots}/{init_shots} ({ratio_shots:.1f}%)\n"
+            md += f"- **Points**: {rec_points}/{init_points} ({ratio_points:.1f}%)\n"
+            md += f"- **Components**: {rs.get('components', 0)}\n"
+            
+            if "features_statistics" in stats:
+                fs = stats["features_statistics"]
+                if "detected_features" in fs:
+                    md += f"- **Detected Features (median)**: {fs['detected_features'].get('median', 'N/A')}\n"
+                if "reconstructed_features" in fs:
+                    md += f"- **Reconstructed Features (median)**: {fs['reconstructed_features'].get('median', 'N/A')}\n"
+
+        rr.log("STATS/SUMMARY", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN), static=True)
+
+    def log_stats_gps_bias(self, stats: Dict[str, Any]) -> None:
+        md = "# GPS/GCP Details\n\n"
+
+        # Errors
+        for error_type in ["gps", "gcp"]:
+            key = f"{error_type}_errors"
+            if key not in stats or "average_error" not in stats[key]:
+                continue
+            
+            err_stats = stats[key]
+            md += f"## {error_type.upper()} Errors (meters)\n"
+            md += "| Component | Mean | Sigma | RMS Error |\n"
+            md += "| --- | --- | --- | --- |\n"
+            
+            for comp in ["x", "y", "z"]:
+                mean = err_stats.get("mean", {}).get(comp, 0)
+                std = err_stats.get("std", {}).get(comp, 0)
+                rms = err_stats.get("error", {}).get(comp, 0)
+                md += f"| {comp.upper()} | {mean:.3f} | {std:.3f} | {rms:.3f} |\n"
+            
+            avg = err_stats.get("average_error", 0)
+            md += f"| **Total** | | | **{avg:.3f}** |\n\n"
+
+        # GPS Bias
+        if "camera_errors" in stats:
+            md += "## GPS Bias\n"
+            md += "| Camera | Scale | Translation | Rotation |\n"
+            md += "| --- | --- | --- | --- |\n"
+            
+            for camera, params in stats["camera_errors"].items():
+                if "bias" in params:
+                    bias = params["bias"]
+                    s = bias.get("scale", 1.0)
+                    t = bias.get("translation", [0,0,0])
+                    r = bias.get("rotation", [0,0,0])
+                    
+                    t_str = f"[{t[0]:.2f}, {t[1]:.2f}, {t[2]:.2f}]"
+                    r_str = f"[{r[0]:.2f}, {r[1]:.2f}, {r[2]:.2f}]"
+                    
+                    md += f"| {camera} | {s:.2f} | {t_str} | {r_str} |\n"
+
+        rr.log("STATS/GPS", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN), static=True)
+
+
+# --- Main Logic ---
 
 def run_dataset(
     data: DataSet,
     output: Optional[str] = None,
     reconstruction_index: int = 0,
 ) -> None:
-    """Export reconstruction to Rerun format for 3D visualization.
-
-    Args:
-        data: OpenSfM dataset
-        output: Output .rrd file path (default: dataset_path/rerun.rrd)
-        reconstruction_index: Index of reconstruction to export (default: 0)
-    """
-
-    # Load reconstruction
+    """Export reconstruction to Rerun format for 3D visualization."""
+    
+    # 1. Load Data
     reconstructions = data.load_reconstruction()
     if not reconstructions:
         logger.error("No reconstructions found in dataset")
         return
 
     if reconstruction_index >= len(reconstructions):
-        logger.error(
-            f"Reconstruction index {reconstruction_index} out of range "
-            f"(found {len(reconstructions)} reconstructions)"
-        )
+        logger.error(f"Reconstruction index {reconstruction_index} out of range")
         return
 
     reconstruction = reconstructions[reconstruction_index]
@@ -78,90 +702,114 @@ def run_dataset(
         f"{len(reconstruction.points)} points"
     )
 
-    # Initialize Rerun
+    # 2. Initialize Drawer
     output_path = output or data.data_path + "/rerun.rrd"
-    rr.init("OpenSfM Reconstruction", spawn=False)
-    rr.save(output_path)
+    drawer = RerunDrawer()
+    drawer.init("OpenSfM Reconstruction", output_path)
+    drawer.setup_blueprint()
     logger.info(f"Saving Rerun data to {output_path}")
 
-    # Set up coordinate system (OpenSfM uses East-North-Up)
-    rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
+    # 3. Precompute Data
+    image_plane_distance = _compute_image_plane_distance(reconstruction)
+    
+    # Precompute GCP observations per shot
+    gcp = data.load_ground_control_points() or []
+    gcp_triangulations = _compute_gcp_triangulations(data, reconstruction, gcp)
+    gcp_3d_errors = _compute_gcp_3d_errors(reconstruction, gcp, gcp_triangulations)
+    shot_gcp_obs = _precompute_gcp_observations(data, reconstruction, gcp, gcp_triangulations)
 
-    # Create a Spatial3D view to display the scene
-    blueprint = rrb.Blueprint(
-        rrb.Spatial3DView(
-            origin="/WORLD",
-            name="3D Scene",
-            background=[13, 17, 23], # Deep dark gray
-            line_grid=rrb.LineGrid3D(
-                visible=False,
-            ),
-            spatial_information=rrb.SpatialInformation(
-                show_axes=False,
-                show_bounding_box=False,
-            ),
-        ),
-        collapse_panels=False,
-        )
+    # 4. Time-Dependent Logging (Shots)
+    reference = reconstruction.reference
+    
+    for shot_id, shot in reconstruction.shots.items():
+        sequence_id = _get_shot_sequence_id(shot_id)
+        drawer.set_time(sequence_id)
 
-    rr.send_blueprint(blueprint)
+        # Load image
+        image = None
+        try:
+            image = data.load_image(shot_id)
+            width = int(shot.camera.width)
+            height = int(shot.camera.height)
+            width, height = _get_scaled_dimensions(width, height)
+            if image.shape[1] != width or image.shape[0] != height:
+                import cv2
+                image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+        except Exception as e:
+            logger.warning(f"Could not load image for {shot_id}: {e}")
 
-    # Export reference coordinate system
+        # Log Shot Pose & Image
+        drawer.log_shot(shot_id, shot.pose, shot.camera, image, image_plane_distance)
+
+        # Log GPS
+        if reference and shot.metadata and shot.metadata.gps_position.has_value:
+            gps_topo = shot.metadata.gps_position.value
+            drawer.log_gps(shot_id, shot.pose, gps_topo)
+
+        # Log GCP 2D Observations
+        if shot_id in shot_gcp_obs:
+            obs = shot_gcp_obs[shot_id]
+            drawer.log_gcp_2d_observations(
+                shot_id,
+                obs["refs"],
+                obs["comps"],
+                obs["labels_refs"],
+                obs["labels_comps"],
+                gcp_3d_errors,
+            )
+        else:
+            drawer.log_gcp_2d_observations(shot_id, [], [], [], [], gcp_3d_errors)
+
+    # 5. Static Logging (Structure & Stats)
+    
+    # Reference
     if reconstruction.reference:
         ref = reconstruction.reference
-        rr.log(
-            "world/reference",
-            rr.TextDocument(
-                f"Reference LLA:\n"
-                f"Latitude: {ref.lat:.6f}°\n"
-                f"Longitude: {ref.lon:.6f}°\n"
-                f"Altitude: {ref.alt:.2f}m",
-            ),
-        )
+        drawer.log_reference_lla(ref.lat, ref.lon, ref.alt)
 
-    # Export cameras (intrinsics)
-    _export_cameras(reconstruction)
+    # Load and log stats.json if available
+    try:
+        stats = data.load_stats()
+        if stats:
+            drawer.log_stats_summary(stats)
+            drawer.log_stats_camera_models(stats, data)
+            drawer.log_stats_gps_bias(stats)
+    except Exception as e:
+        logger.warning(f"Could not load or log stats.json: {e}")
 
-    # Export camera poses (shots)
-    _export_shots(data, reconstruction, _compute_image_plane_distance(reconstruction))
-    _export_camera_path(reconstruction)
+    # 3D Points
+    _export_points(reconstruction, drawer)
 
-    # Export 3D points
-    _export_points(reconstruction)
+    # Camera Path
+    _export_camera_path(reconstruction, drawer)
 
-    # Export Ground Control Points
-    gcp = data.load_ground_control_points()
+    # GCP 3D Geometry
     if gcp:
-        _export_gcp(data, reconstruction, gcp)
+        _export_gcp_3d(data, reconstruction, gcp, gcp_triangulations, gcp_3d_errors, drawer)
 
-    # Export tracks manager (optional, for visualizing observations)
+    # Match Graph
     if data.tracks_exists():
         tracks_manager = data.load_tracks_manager()
-        # _export_observations(reconstruction, tracks_manager)
-        _export_matchgraph(data, reconstruction, tracks_manager)
+        _export_matchgraph(data, reconstruction, tracks_manager, drawer)
 
-    _export_coverage_map(data, reconstruction)
+    # Coverage Map
+    _export_coverage_map(data, reconstruction, drawer)
 
     logger.info(f"Rerun export completed: {output_path}")
     logger.info(f"Open with: rerun {output_path}")
 
 
+# --- Helper Functions ---
+
 def _get_shot_sequence_id(shot_id: str) -> int:
-    """Extract integer ID from shot_id string (e.g., 'Shot 123' -> 123).
-    
-    If extraction fails, use hash of the shot_id to ensure uniqueness.
-    """
     try:
-        # Try to extract number from strings like "Shot 123" or "DSC_0123.jpg"
         import re
         numbers = re.findall(r'\d+', shot_id)
         if numbers:
-            return int(numbers[-1])  # Use the last number found
+            return int(numbers[-1])
     except:
         pass
-    
-    # Fallback: use hash of shot_id
-    return hash(shot_id) & 0x7FFFFFFF  # Ensure positive integer
+    return hash(shot_id) & 0x7FFFFFFF
 
 
 def _get_scaled_dimensions(width: int, height: int) -> tuple[int, int]:
@@ -174,26 +822,22 @@ def _get_scaled_dimensions(width: int, height: int) -> tuple[int, int]:
 def _compute_image_plane_distance(reconstruction: types.Reconstruction) -> float:
     positions = np.array([shot.pose.get_origin() for shot in reconstruction.shots.values()])
     if len(positions) < 2:
-        return 2.0
-        
+        return DEFAULT_IMAGE_PLANE_DISTANCE
     try:
         from scipy.spatial import KDTree
         tree = KDTree(positions)
-        dists, _ = tree.query(positions, k=5)
+        dists, _ = tree.query(positions, k=KNN_FOR_SCALE)
         median_nn_dist = np.median(dists[:, 1])
         return float(median_nn_dist)
     except ImportError:
-        logger.warning("Scipy not found, using default image plane distance.")
-        return 2.0
+        return DEFAULT_IMAGE_PLANE_DISTANCE
 
 
 def _get_camera_calibration(camera: pygeometry.Camera, width: int, height: int):
-    """Calculate camera intrinsic parameters."""
     fx = fy = camera.focal * max(width, height)
     if hasattr(camera, "focal_x") and hasattr(camera, "focal_y"):
         fx = camera.focal_x * max(width, height)
         fy = camera.focal_y * max(width, height)
-
     cx = width / 2.0
     cy = height / 2.0
     if hasattr(camera, "c_x") and hasattr(camera, "c_y"):
@@ -202,47 +846,100 @@ def _get_camera_calibration(camera: pygeometry.Camera, width: int, height: int):
     return fx, fy, cx, cy
 
 
-def _export_cameras(reconstruction: types.Reconstruction) -> None:
-    """Export camera models (intrinsics)."""
-    for camera_id, camera in reconstruction.cameras.items():
-        # Get camera parameters
-        width = int(camera.width)
-        height = int(camera.height)
-        width, height = _get_scaled_dimensions(width, height)
-        fx, fy, cx, cy = _get_camera_calibration(camera, width, height)
-        focal_length_px = camera.focal * max(width, height)
-
-        # Log camera intrinsics (strip spaces from camera_id)
-        camera_id_clean = camera_id.replace(" ", "_")
-        rr.log(
-            f"world/cameras/{camera_id_clean}/info",
-            rr.TextDocument(
-                f"Camera: {camera_id}\n"
-                f"Type: {camera.projection_type}\n"
-                f"Resolution: {width}x{height}\n"
-                f"Focal: {focal_length_px:.1f}px\n"
-                f"Principal Point: ({cx:.1f}, {cy:.1f})"
-            ),
-        )
+def _compute_gcp_triangulations(
+    data: DataSet,
+    reconstruction: types.Reconstruction,
+    gcp: List[pymap.GroundControlPoint]
+) -> Dict[str, Optional[np.ndarray]]:
+    triangulations = {}
+    for point in gcp:
+        if point.lla:
+            triangulations[point.id] = multiview.triangulate_gcp(
+                point, reconstruction.shots, data.config["gcp_reprojection_error_threshold"]
+            )
+    return triangulations
 
 
-def _export_shots(data: DataSet, reconstruction: types.Reconstruction, image_plane_distance: float) -> None:
-    """Export camera shots (poses and images)."""
+def _compute_gcp_3d_errors(
+    reconstruction: types.Reconstruction,
+    gcp: List[pymap.GroundControlPoint],
+    triangulations: Dict[str, Optional[np.ndarray]]
+) -> Dict[str, float]:
+    errors = {}
     reference = reconstruction.reference
-
-    for shot_id, shot in reconstruction.shots.items():
-        _export_shot_pose(shot, shot_id)
-
-        # Collect GPS position and error line if available
-        if reference and shot.metadata and shot.metadata.gps_position.has_value:
-            gps_topo = shot.metadata.gps_position.value
-            _export_shot_gps(shot, shot_id, gps_topo)
-
-        _export_shot_pinhole(data, shot, shot_id, image_plane_distance)
+    for point in gcp:
+        if point.lla and point.id in triangulations and triangulations[point.id] is not None:
+             ref_pos = reference.to_topocentric(*point.lla_vec)
+             comp_pos = triangulations[point.id]
+             errors[point.id] = np.linalg.norm(comp_pos - ref_pos)
+        else:
+             errors[point.id] = -1.0
+    return errors
 
 
-def _export_camera_path(reconstruction: types.Reconstruction) -> None:
-    """Export camera path based on capture time."""
+def _precompute_gcp_observations(
+    data: DataSet,
+    reconstruction: types.Reconstruction,
+    gcp: List[pymap.GroundControlPoint],
+    triangulations: Dict[str, Optional[np.ndarray]]
+) -> Dict[str, Dict[str, Any]]:
+    """Precompute 2D GCP observations per shot."""
+    shot_obs = defaultdict(lambda: {"refs": [], "comps": [], "labels_refs": [], "labels_comps": []})
+    reference = reconstruction.reference
+    
+    for point in gcp:
+        if not point.lla:
+            continue
+            
+        triangulated = triangulations.get(point.id)
+        
+        # Project to shots
+        for obs in point.observations:
+            shot_id = obs.shot_id
+            if shot_id not in reconstruction.shots:
+                continue
+                
+            shot = reconstruction.shots[shot_id]
+            width = int(shot.camera.width)
+            height = int(shot.camera.height)
+            width, height = _get_scaled_dimensions(width, height)
+            normalizer = max(width, height)
+
+            # Reference pixel
+            px = obs.projection[0] * normalizer + width / 2.0
+            py = obs.projection[1] * normalizer + height / 2.0
+            
+            shot_obs[shot_id]["refs"].append((px, py))
+            shot_obs[shot_id]["labels_refs"].append(point.id)
+
+            # Computed pixel
+            if triangulated is not None:
+                projected = shot.project(triangulated)
+                px_comp = projected[0] * normalizer + width / 2.0
+                py_comp = projected[1] * normalizer + height / 2.0
+                shot_obs[shot_id]["comps"].append((px_comp, py_comp))
+                shot_obs[shot_id]["labels_comps"].append(point.id)
+                
+    return shot_obs
+
+
+def _export_points(reconstruction: types.Reconstruction, drawer: Drawer) -> None:
+    if not reconstruction.points:
+        return
+    positions = []
+    colors = []
+    for point in reconstruction.points.values():
+        positions.append(point.coordinates)
+        c = point.color
+        if all(val <= 1.0 for val in c):
+            c = [int(val * 255) for val in c]
+        colors.append(c)
+    
+    drawer.log_points(np.array(positions), np.array(colors, dtype=np.uint8))
+    logger.info(f"Exported {len(positions)} automatic tie points")
+
+
+def _export_camera_path(reconstruction: types.Reconstruction, drawer: Drawer) -> None:
     shots_with_time = []
     for shot in reconstruction.shots.values():
         if shot.metadata and shot.metadata.capture_time.has_value:
@@ -251,385 +948,45 @@ def _export_camera_path(reconstruction: types.Reconstruction) -> None:
     if len(shots_with_time) < 2:
         return
 
-    # Sort by capture time
     shots_with_time.sort(key=lambda x: x.metadata.capture_time.value)
-    
     points = [shot.pose.get_origin() for shot in shots_with_time]
-    
-    rr.log(
-        "WORLD/PATH",
-        rr.LineStrips3D(
-            [points],
-            colors=[[255, 255, 255]], # White
-            radii=SIZE_CAMERA_PATH_LINE,
-        ),
-        static=True,
-    )
+    drawer.log_camera_path(points)
     logger.info(f"Exported camera path with {len(points)} points")
 
 
-def _export_shot_pose(shot: pymap.Shot, shot_id: str) -> None:
-    pose = shot.pose
-    R = pose.get_rotation_matrix()  # 3x3 rotation matrix
-    t = pose.get_origin()  # 3D position (camera center in world coords)
-
-    # Rerun expects rotation from world to camera
-    # OpenSfM GetRotationMatrix gives camera-to-world rotation
-    R_world_from_camera = R.T  # Transpose to get world-from-camera
-
-    # Log camera pose with integer sequence ID
-    sequence_id = _get_shot_sequence_id(shot_id)
-    rr.set_time_sequence("shot", sequence_id)
-    rr.log(
-        f"WORLD/SHOTS/{shot_id}",
-        rr.Transform3D(
-            translation=t,
-            mat3x3=R_world_from_camera,
-            from_parent=False,
-        ),
-    )
-
-    labels_shift = np.array([0, 0, SIZE_LABEL_SHIFT_SHOT])  # Shift labels above targets
-    rr.log(
-        f"WORLD/SHOTS/{shot_id}",
-        rr.Points3D(
-            positions=labels_shift,
-            labels=[shot_id],
-            radii=0.0,  # Invisible points, just for labels
-            colors=[LABEL_COLOR],  # White labels
-        ),
-        static=True,
-    )
-
-
-def _export_shot_pinhole(data: DataSet, shot: pymap.Shot, shot_id: str, image_plane_distance: float) -> None:
-    # Create pinhole camera for image projection
-    width = int(shot.camera.width)
-    height = int(shot.camera.height)
-    width, height = _get_scaled_dimensions(width, height)
-    fx, fy, cx, cy = _get_camera_calibration(shot.camera, width, height)
-
-    rr.log(
-        f"WORLD/SHOTS/{shot_id}/CAMERA",
-        rr.Pinhole(
-            resolution=[width, height],
-            focal_length=[fx, fy],
-            principal_point=[cx, cy],
-            image_plane_distance=image_plane_distance,
-        ),
-    )
-
-    # Load and log image if available
-    try:
-        image = data.load_image(shot_id)
-        
-        # Resize image if needed
-        if image.shape[1] != width or image.shape[0] != height:
-            import cv2
-            image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
-
-        rr.log(
-            f"WORLD/SHOTS/{shot_id}/CAMERA/IMAGE",
-            rr.Image(image).compress(jpeg_quality=50),
-        )
-    except Exception as e:
-        logger.warning(f"Could not load image for {shot_id}: {e}")
-
-
-def _export_shot_gps(
-    shot: pymap.Shot,
-    shot_id: str,
-    gps_topo: np.ndarray,
-) -> None:
-
-    base_path = f"WORLD/GPS/{shot_id}/"
-
-    arrow_size = SIZE_GPS_ARROW
-    arrow_radii = arrow_size / 8.0
-    arrow_length = arrow_size  # Length of arrows for GPS positions
-    
-    origin = gps_topo.copy()
-    origin[2] += arrow_length
-    vector = np.array([0, 0, -arrow_length])
-
-    rr.log(
-        f"{base_path}/POSITION",
-        rr.Arrows3D(
-            origins=[origin],
-            vectors=[vector],
-            colors=[GPS_COLOR],  # Blue
-            radii=arrow_radii,
-        ),
-        static=True,
-    )
-
-    rr.log(
-        f"{base_path}/RESIDUAL",
-        rr.LineStrips3D(
-            [[shot.pose.get_origin(), gps_topo]],
-            colors=[GPS_COLOR],  # Blue
-            radii=SIZE_GPS_RESIDUAL_LINE,
-        ),
-        static=True,
-    )
-
-
-def _export_points(reconstruction: types.Reconstruction) -> None:
-    """Export 3D points (structure)."""
-
-    if not reconstruction.points:
-        return
-
-    # Collect all points
-    positions = []
-    colors = []
-    point_ids = []
-
-    for point_id, point in reconstruction.points.items():
-        positions.append(point.coordinates)
-        # Convert color from 0-1 to 0-255 if needed
-        color = point.color
-        if all(c <= 1.0 for c in color):
-            color = [int(c * 255) for c in color]
-        colors.append(color)
-        point_ids.append(point_id)
-
-    # Log all points at once for efficiency
-    rr.log(
-        "WORLD/POINTS",
-        rr.Points3D(
-            positions=np.array(positions),
-            colors=np.array(colors, dtype=np.uint8),
-            radii=SIZE_TIE_POINT,  # Small radius for tie points
-        ),
-        static=True,
-    )
-
-    logger.info(f"Exported {len(positions)} automatic tie points")
-
-
-def _export_gcp(
+def _export_gcp_3d(
     data: DataSet,
     reconstruction: types.Reconstruction,
     gcp: List[pymap.GroundControlPoint],
+    triangulations: Dict[str, Optional[np.ndarray]],
+    gcp_3d_errors: Dict[str, float],
+    drawer: Drawer
 ) -> None:
-    """Export Ground Control Points."""
-    if not gcp:
-        return
-
     reference = reconstruction.reference
-
+    count = 0
     for point in gcp:
-        # Get 3D position
         if point.lla:
-            # Convert from lat/lon/alt to topocentric coordinates
-            lla_vec = point.lla_vec
-            pos = reference.to_topocentric(*lla_vec)
+            pos = reference.to_topocentric(*point.lla_vec)
+            triangulated = triangulations.get(point.id)
+            
+            error = gcp_3d_errors.get(point.id, -1.0)
 
-            # Try to triangulate GCP
-            triangulated = multiview.triangulate_gcp(
-                point, reconstruction.shots, data.config["gcp_reprojection_error_threshold"]
-            )
-
-            _export_single_gcp_geometry(point.id, pos, triangulated)
-            _export_gcp_observations(reconstruction, point)
-
-    logger.info(f"Exported {len(gcp)} Ground Control Points")
-
-
-def _export_gcp_observations(
-    reconstruction: types.Reconstruction, 
-    point: pymap.GroundControlPoint
-) -> None:
-    # Log GCP observations in images
-    for obs in point.observations:
-        shot_id = obs.shot_id
-        if shot_id in reconstruction.shots:
-            # Log 2D observation
-            shot = reconstruction.shots[shot_id]
-            width = int(shot.camera.width)
-            height = int(shot.camera.height)
-            width, height = _get_scaled_dimensions(width, height)
-            normalize = max(width, height)
-
-            # Convert from normalized to pixel coordinates
-            px = obs.projection[0] * normalize + width / 2.0
-            py = obs.projection[1] * normalize + height / 2.0
-
-            # Strip spaces from camera_id
-            camera_id_clean = shot.camera.id.replace(" ", "_")
-
-            # Set time sequence with integer ID
-            sequence_id = _get_shot_sequence_id(shot_id)
-            rr.set_time_sequence("shot", sequence_id)
-            rr.log(
-                f"world/cameras/{camera_id_clean}/shots/{shot_id}/pinhole/gcp/{point.id}",
-                rr.Points2D(
-                    [[px, py]],
-                    colors=[GCP_OBSERVATION_COLOR],
-                    radii=SIZE_2D_POINT_GCP,
-                    labels=[point.id],
-                ),
-            )
-
-
-def _export_single_gcp_geometry(
-    gcp_id: str,
-    reference_pos: np.ndarray,
-    computed_pos: Optional[np.ndarray],
-) -> None:
-    base_path = f"WORLD/GCP/{gcp_id}"
-
-    # Target dimensions (1m x 1m target)
-    target_size = SIZE_GCP_TARGET
-    quad_r = target_size / 4.0  # Half-size of a quadrant
-    thickness = SIZE_GCP_THICKNESS
-
-    pos_np = np.array(reference_pos)
-    color = GCP_REFERENCE_COLOR if computed_pos is not None else GCP_ERROR_COLOR
-
-    # Checkerboard boxes
-    centers = [
-        pos_np + [-quad_r, quad_r, 0],
-        pos_np + [quad_r, -quad_r, 0]
-    ]
-    half_sizes = [[quad_r, quad_r, thickness]] * 2
-    colors = [color] * 2
-
-    rr.log(
-        f"{base_path}/TARGET",
-        rr.Boxes3D(
-            centers=centers,
-            half_sizes=half_sizes,
-            colors=colors,
-            fill_mode="solid",
-        ),
-        static=True,
-    )
-
-    # Outline
-    rr.log(
-        f"{base_path}/OUTLINE",
-        rr.Boxes3D(
-            centers=[pos_np],
-            half_sizes=[[target_size / 2.0, target_size / 2.0, thickness]],
-            colors=[color],
-            radii=thickness,
-            fill_mode="major_wireframe",
-        ),
-        static=True,
-    )
-
-    # Label
-    labels_shift = np.array([0, 0, target_size])
-    rr.log(
-        f"{base_path}",
-        rr.Points3D(
-            positions=[pos_np + labels_shift],
-            labels=[gcp_id],
-            radii=0.0,
-            colors=[LABEL_COLOR],
-        ),
-        static=True,
-    )
-
-    # Computed position
-    if computed_pos is not None:
-        arrow_length = 0.5
-        origin = computed_pos.copy()
-        origin[2] += arrow_length
-        vector = np.array([0, 0, -arrow_length])
-
-        rr.log(
-            f"{base_path}/COMPUTED",
-            rr.Arrows3D(
-                origins=[origin],
-                vectors=[vector],
-                colors=[GCP_COMPUTED_COLOR],
-                radii=SIZE_GCP_COMPUTED_ARROW,
-            ),
-            static=True,
-        )
-
-        # Residual line
-        rr.log(
-            f"{base_path}/RESIDUAL",
-            rr.LineStrips3D(
-                [[computed_pos, reference_pos]],
-                colors=[GCP_COMPUTED_COLOR],
-                radii=SIZE_GCP_RESIDUAL_LINE,
-            ),
-            static=True,
-        )
-
-
-def _export_observations(
-    reconstruction: types.Reconstruction,
-    tracks_manager: pymap.TracksManager,
-) -> None:
-    """Export feature observations (2D points in images)."""
-
-    logger.info("Exporting feature observations...")
-
-    # Sample some tracks to avoid overwhelming the viewer
-    max_tracks = 1000
-    track_ids = list(reconstruction.points.keys())
-    if len(track_ids) > max_tracks:
-        import random
-
-        track_ids = random.sample(track_ids, max_tracks)
-
-    for track_id in track_ids:
-        if track_id not in reconstruction.points:
-            continue
-
-        observations = tracks_manager.get_track_observations(track_id)
-
-        for shot_id, obs in observations.items():
-            if shot_id not in reconstruction.shots:
-                continue
-
-            shot = reconstruction.shots[shot_id]
-            width = int(shot.camera.width)
-            height = int(shot.camera.height)
-            width, height = _get_scaled_dimensions(width, height)
-            normalize = max(width, height)
-
-            # Convert from normalized to pixel coordinates
-            px = obs.point[0] * normalize + width / 2.0
-            py = obs.point[1] * normalize + height / 2.0
-
-            # Strip spaces from camera_id
-            camera_id_clean = shot.camera.id.replace(" ", "_")
-
-            # Set time sequence with integer ID
-            sequence_id = _get_shot_sequence_id(shot_id)
-            rr.set_time_sequence("shot", sequence_id)
-            rr.log(
-                f"world/cameras/{camera_id_clean}/shots/{shot_id}/pinhole/features",
-                rr.Points2D(
-                    [[px, py]],
-                    colors=[FEATURE_COLOR],  # Green for features
-                    radii=SIZE_2D_POINT_FEATURE,
-                ),
-            )
-
-    logger.info(f"Exported observations for {len(track_ids)} tracks")
+            drawer.log_gcp_3d(point.id, pos, triangulated, error)
+            count += 1
+    logger.info(f"Exported {count} Ground Control Points")
 
 
 def _export_matchgraph(
     data: DataSet,
     reconstruction: types.Reconstruction,
     tracks_manager: pymap.TracksManager,
+    drawer: Drawer
 ) -> None:
-    """Export match graph connectivity."""
     logger.info("Exporting match graph...")
-    
     all_shots = list(reconstruction.shots.keys())
     all_points = list(reconstruction.points.keys())
-    
-    # Compute connectivity
     connectivity = tracks_manager.get_all_pairs_connectivity(all_shots, all_points)
+    
     if not connectivity:
         return
 
@@ -642,23 +999,17 @@ def _export_matchgraph(
     
     lines = []
     colors = []
-
     min_inliers = data.config.get("resection_min_inliers", 15)
 
     for (node1, node2), edge in connectivity.items():
-        if edge < 5 * min_inliers:
+        if edge < MATCHGRAPH_MIN_INLIERS_FACTOR * min_inliers:
             continue
-            
         if node1 not in reconstruction.shots or node2 not in reconstruction.shots:
             continue
             
-        shot1 = reconstruction.shots[node1]
-        shot2 = reconstruction.shots[node2]
+        p1 = reconstruction.shots[node1].pose.get_origin()
+        p2 = reconstruction.shots[node2].pose.get_origin()
         
-        p1 = shot1.pose.get_origin()
-        p2 = shot2.pose.get_origin()
-        
-        # Normalize edge weight for color mapping
         c_val = max(0.0, min(1.0, 1.0 - (float(edge) - lowest) / (highest - lowest + 1e-6)))
         rgba = MATCHGRAPH_CMAP(1.0 - c_val)
         
@@ -666,35 +1017,19 @@ def _export_matchgraph(
         colors.append([int(c * 255) for c in rgba[:3]])
 
     if lines:
-        rr.log(
-            "WORLD/STATS/MATCHGRAPH",
-            rr.LineStrips3D(
-                lines,
-                colors=colors,
-                radii=SIZE_MATCHGRAPH_LINE,
-            ),
-            static=True,
-        )
+        drawer.log_matchgraph(lines, colors)
         logger.info(f"Exported match graph with {len(lines)} edges")
 
 
 def _export_coverage_map(
     data: DataSet,
     reconstruction: types.Reconstruction,
+    drawer: Drawer
 ) -> None:
-    """Export coverage map as a tessellated quad."""
     logger.info("Exporting coverage map...")
-    
     if not reconstruction.points:
         return
 
-    try:
-        from scipy.spatial import Delaunay
-    except ImportError:
-        logger.warning("Scipy not found, skipping coverage map triangulation.")
-        return
-
-    # 1. Compute Bounding Box
     points = np.array([p.coordinates for p in reconstruction.points.values()])
     if len(points) == 0:
         return
@@ -703,78 +1038,50 @@ def _export_coverage_map(
     max_pt = np.percentile(points, 99, axis=0)
     median_z = np.median(points[:, 2])
 
-    # Add some margin
-    margin_ratio = 0.1
     extent = max_pt - min_pt
-    min_pt -= extent * margin_ratio
-    max_pt += extent * margin_ratio
+    min_pt -= extent * COVERAGE_EXTENT_MARGIN
+    max_pt += extent * COVERAGE_EXTENT_MARGIN
     
-    # 2. Generate Vertices from Frustums
     vertices = []
-    
     for shot in reconstruction.shots.values():
         w = shot.camera.width
         h = shot.camera.height
         
-        m = 0.01
-        n_steps = 10
-        steps = np.linspace(0, 1, n_steps)
+        m = COVERAGE_MARGIN
+        steps = np.linspace(0, 1, COVERAGE_GRID_STEPS)
         steps = m + steps * (1 - 2 * m)
         
         xs = w * steps
         ys = h * steps
         pixels = features.normalized_image_coordinates(np.array([[x, y] for y in ys for x in xs]), w, h)
         
-        # Transform bearings to world frame
-        # pose is World -> Camera. Rotation part R.
         bearings = shot.camera.pixel_bearing_many(pixels)
         R_wc = shot.pose.get_rotation_matrix().T
         bearings_world = bearings @ R_wc.T
-        
         origin = shot.pose.get_origin()
         
         for direction in bearings_world:
-            # Intersect with Z = median_z
-            # P = O + t * D
-            # median_z = O_z + t * D_z  => t = (median_z - O_z) / D_z
-            
             if abs(direction[2]) < 1e-6:
                 continue
-                
             t = (median_z - origin[2]) / direction[2]
-            if t <= 0: # Behind camera or camera is inside plane
+            if t <= 0:
                 continue
-                
             p_ground = origin + t * direction
             
-            # Check bounds
             if (p_ground[0] >= min_pt[0] and p_ground[0] <= max_pt[0] and
                 p_ground[1] >= min_pt[1] and p_ground[1] <= max_pt[1]):
                 vertices.append(p_ground)
 
-    if not vertices:
-        logger.warning("No frustum intersections found within bounds.")
+    if not vertices or len(vertices) < 3:
         return
 
-    # Remove duplicates/close points to avoid Delaunay issues
-    #vertices = np.unique(np.round(np.array(vertices), 3), axis=0)
-    
-    if len(vertices) < 3:
-        return
-
-    # 3. Delaunay Triangulation
     vertices = np.array(vertices)
     tri = Delaunay(vertices[:, :2])
     indices = tri.simplices
     
-    # 4. Compute Visibility
     counts = np.zeros(len(vertices), dtype=int)
-    
     for shot in reconstruction.shots.values():
-        # Transform to camera frame
         p_cam = shot.pose.transform_many(vertices)
-        
-        # Check if in front of camera (Z > 0)
         valid_z = p_cam[:, 2] > 0
         indices_valid_z = np.where(valid_z)[0]
         
@@ -784,7 +1091,6 @@ def _export_coverage_map(
         p_cam_valid = p_cam[indices_valid_z]
         projections = shot.camera.project_many(p_cam_valid)
         
-        # Convert to pixels
         w = shot.camera.width
         h = shot.camera.height
         normalizer = max(w, h)
@@ -792,31 +1098,14 @@ def _export_coverage_map(
         px = projections[:, 0] * normalizer + w / 2.0
         py = projections[:, 1] * normalizer + h / 2.0
         
-        # Check bounds
         in_view = (px >= 0) & (px < w) & (py >= 0) & (py < h)
-        
-        # Update counts
         counts[indices_valid_z[in_view]] += 1
     
-    # 5. Colorize
-    # Cap between 2 and 5
-    min_count = 0.0
-    max_count = 20.0
+    norm_counts = np.clip(counts, COVERAGE_MIN_COUNT, COVERAGE_MAX_COUNT)
+    norm_counts = (norm_counts - COVERAGE_MIN_COUNT) / (COVERAGE_MAX_COUNT - COVERAGE_MIN_COUNT)
     
-    norm_counts = np.clip(counts, min_count, max_count)
-    norm_counts = (norm_counts - min_count) / (max_count - min_count)
-    
-    colors = COVERAGE_CMAP(norm_counts) # RGBA
+    colors = COVERAGE_CMAP(norm_counts)
     vertex_colors = (colors[:, :3] * 255).astype(np.uint8)
 
-    # 6. Log
-    rr.log(
-        "WORLD/STATS/COVERAGE",
-        rr.Mesh3D(
-            vertex_positions=vertices,
-            vertex_colors=vertex_colors,
-            triangle_indices=indices,
-        ),
-        static=True
-    )
+    drawer.log_coverage_map(vertices, vertex_colors, indices)
     logger.info(f"Exported coverage map with {len(vertices)} vertices")

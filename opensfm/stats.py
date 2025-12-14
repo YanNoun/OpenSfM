@@ -316,11 +316,10 @@ def processing_statistics(
 
     steps_times = {}
     for step_name, report_file in steps.items():
-        file_path = os.path.join(data.data_path, "reports", report_file)
-        if os.path.exists(file_path):
-            with io.open_rt(file_path) as fin:
-                obj = io.json_load(fin)
-        else:
+        try:
+            report_str = data.load_report(report_file)
+            obj = io.json_loads(report_str)
+        except (IOError, OSError):
             obj = {}
         if "wall_time" in obj:
             steps_times[step_name] = obj["wall_time"]
