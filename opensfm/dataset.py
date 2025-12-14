@@ -638,6 +638,24 @@ class DataSet(DataSetBase):
         with self.io_handler.open_wt(self._ground_control_points_file()) as fout:
             io.write_ground_control_points(points, fout)
 
+    def _stats_file(self) -> str:
+        return os.path.join(self.data_path, "stats", "stats.json")
+
+    def load_stats(self) -> Dict[str, Any]:
+        """Load statistics from stats/stats.json."""
+        stats_file = self._stats_file()
+        if self.io_handler.isfile(stats_file):
+            with self.io_handler.open_rt(stats_file) as fin:
+                return io.json_load(fin)
+        return {}
+
+    def save_stats(self, stats: Dict[str, Any]) -> None:
+        """Save statistics to stats/stats.json."""
+        stats_file = self._stats_file()
+        self.io_handler.mkdir_p(os.path.dirname(stats_file))
+        with self.io_handler.open_wt(stats_file) as fout:
+            io.json_dump(stats, fout)
+
     def image_as_array(self, image: str) -> NDArray:
         logger.warning("image_as_array() is deprecated. Use load_image() instead.")
         return self.load_image(image)

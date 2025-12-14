@@ -239,5 +239,13 @@ class DataSetBase(ABC):
     ) -> None:
         pass
 
+    @abstractmethod
+    def load_stats(self) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
+    def save_stats(self, stats: Dict[str, Any]) -> None:
+        pass
+
     def clean_up(self) -> None:
         pass

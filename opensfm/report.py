@@ -37,7 +37,7 @@ class Report:
         self.cell_height = 7
         self.total_size = 190
 
-        self.stats: Dict[str, Any] = self._read_stats_file("stats.json")
+        self.stats: Dict[str, Any] = data.load_stats()
 
     def save_report(self, filename: str) -> None:
         bytestring = self.pdf.output()
@@ -94,11 +94,6 @@ class Report:
                     self.pdf.set_fill_color(*self.mapi_light_light_green)
                 self.pdf.cell(size, self.cell_height, col, align="L")
             self.pdf.set_xy(self.margin, self.pdf.get_y() + self.cell_height)
-
-    def _read_stats_file(self, filename: str) -> Dict[str, Any]:
-        file_path = os.path.join(self.output_path, filename)
-        with self.io_handler.open_rt(file_path) as fin:
-            return io.json_load(fin)
 
     def _make_section(self, title: str) -> None:
         self.pdf.set_font("Helvetica", "B", self.h1)
