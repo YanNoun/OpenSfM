@@ -16,6 +16,7 @@ class Command(command.CommandBase):
             dataset,
             output=args.output,
             reconstruction_index=args.reconstruction_index,
+            proj=args.proj,
         )
 
     def add_arguments_impl(self, parser: argparse.ArgumentParser) -> None:
@@ -30,4 +31,9 @@ class Command(command.CommandBase):
             type=int,
             default=0,
             help="Index of reconstruction to export (default: 0)",
+        )
+        parser.add_argument(
+            "--proj",
+            action="store_true",
+            help="Use coordinate system from gcp_list.txt",
         )

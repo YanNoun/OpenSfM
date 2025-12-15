@@ -878,6 +878,7 @@ def _read_gcp_list_lines(
             point.id = "unnamed-%d" % len(points)
             point.lla = {"latitude": lat, "longitude": lon, "altitude": alt}
             point.has_altitude = has_altitude
+            point.coordinates = [easting, northing, alt]
 
             points[key] = point
 
@@ -934,15 +935,6 @@ def read_gcp_projection_string(fileobj: IO[str]) -> Optional[str]:
     return None
 
 
-def read_gcp_projection(line: str) -> Optional[pyproj.Transformer]:
-    """Build a proj4 from the GCP format line."""
-    projection_string = _parse_projection_string(line)
-    if projection_string is None:
-        return None
-
-    return projection_string
-
-
 def _valid_gcp_line(line: str) -> bool:
     stripped = line.strip()
     return stripped != "" and stripped[0] != "#"
@@ -977,6 +969,9 @@ def read_ground_control_points(fileobj: IO[str]) -> List[pymap.GroundControlPoin
         if lla:
             point.lla = lla
             point.has_altitude = "altitude" in point.lla
+
+        if "coordinates" in point_dict:
+            point.coordinates = point_dict["coordinates"]
 
         observations = []
         observing_images = set()
@@ -1015,6 +1010,9 @@ def write_ground_control_points(
             }
             if point.has_altitude:
                 point_obj["position"]["altitude"] = point.lla["altitude"]
+
+        if hasattr(point, "coordinates"):
+            point_obj["coordinates"] = list(point.coordinates)
 
         point_obj["observations"] = []
         for observation in point.observations:

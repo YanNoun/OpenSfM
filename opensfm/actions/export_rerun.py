@@ -2,14 +2,18 @@
 import logging
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Sequence, Tuple, Any
 import base64
 import os
 
 import numpy as np
+import pyproj
 from opensfm import features, multiview, pymap, types, io
+from opensfm import geo
 from opensfm.dataset import DataSet
 from opensfm import pygeometry
+from opensfm.actions import export_geocoords
+
 
 import matplotlib.cm as cm
 import rerun as rr
@@ -338,15 +342,6 @@ class RerunDrawer(Drawer):
                     colors=outline_colors,
                     radii=SIZE_GCP_2D_THICKNESS,
                 ),
-            )
-            rr.log(
-                f"SHOTS/IMAGE/GCP/REFERENCE/LABELS",
-                rr.Points2D(
-                    refs,
-                    labels=labels_refs,
-                    radii=0,
-                    colors=LABEL_COLOR
-                )
             )
         else:
             rr.log(f"SHOTS/IMAGE/GCP/REFERENCE", rr.Clear(recursive=True))
@@ -682,6 +677,7 @@ def run_dataset(
     data: DataSet,
     output: Optional[str] = None,
     reconstruction_index: int = 0,
+    proj: bool = False,
 ) -> None:
     """Export reconstruction to Rerun format for 3D visualization."""
     
@@ -696,6 +692,43 @@ def run_dataset(
         return
 
     reconstruction = reconstructions[reconstruction_index]
+
+    centering = None
+    if proj:
+        gcp_list_file = data._gcp_list_file()
+        if data.io_handler.isfile(gcp_list_file):
+            with data.io_handler.open_rt(gcp_list_file) as f:
+                proj_str = io.read_gcp_projection_string(f)
+            
+            if proj_str:
+                logger.info(f"Transforming reconstruction to geocoords: {proj_str}")
+                reference = data.load_reference()
+
+                # Transform to the GCP CS
+                projection = geo.construct_proj_transformer(proj_str, inverse=True)
+                geo.transform_reconstruction_with_proj(reconstruction, projection)
+
+                # Center the reconstruction to avoid large coordinates
+                all_points = [p.coordinates for p in reconstruction.points.values()]
+                if all_points:
+                    center = np.mean(all_points, axis=0)
+                else:
+                    all_origins = [shot.pose.get_origin() for shot in reconstruction.shots.values()]
+                    if all_origins:
+                        center = np.mean(all_origins, axis=0)
+                    else:
+                        center = np.zeros(3)
+
+                logger.info(f"Centering reconstruction at {center}")
+                centering = -center
+                
+                for point in reconstruction.points.values():
+                    point.coordinates += centering
+                for shot in reconstruction.shots.values():
+                    shot.pose.set_origin(shot.pose.get_origin() + centering)
+        else:
+             logger.warning("No gcp_list.txt found, skipping projection.")
+
     logger.info(
         f"Exporting reconstruction {reconstruction_index} with "
         f"{len(reconstruction.shots)} shots, "
@@ -715,7 +748,7 @@ def run_dataset(
     # Precompute GCP observations per shot
     gcp = data.load_ground_control_points() or []
     gcp_triangulations = _compute_gcp_triangulations(data, reconstruction, gcp)
-    gcp_3d_errors = _compute_gcp_3d_errors(reconstruction, gcp, gcp_triangulations)
+    gcp_3d_errors = _compute_gcp_3d_errors(reconstruction, gcp, gcp_triangulations, centering)
     shot_gcp_obs = _precompute_gcp_observations(data, reconstruction, gcp, gcp_triangulations)
 
     # 4. Time-Dependent Logging (Shots)
@@ -744,7 +777,13 @@ def run_dataset(
         # Log GPS
         if reference and shot.metadata and shot.metadata.gps_position.has_value:
             gps_topo = shot.metadata.gps_position.value
-            drawer.log_gps(shot_id, shot.pose, gps_topo)
+            gps_pos = gps_topo
+            if projection is not None:
+                gps_pos = np.array(geo.transform_to_proj(gps_topo, reference, projection))
+                if centering is not None:
+                    gps_pos += centering
+
+            drawer.log_gps(shot_id, shot.pose, gps_pos)
 
         # Log GCP 2D Observations
         if shot_id in shot_gcp_obs:
@@ -785,7 +824,7 @@ def run_dataset(
 
     # GCP 3D Geometry
     if gcp:
-        _export_gcp_3d(data, reconstruction, gcp, gcp_triangulations, gcp_3d_errors, drawer)
+        _export_gcp_3d(data, reconstruction, gcp, gcp_triangulations, gcp_3d_errors, drawer, centering)
 
     # Match Graph
     if data.tracks_exists():
@@ -863,15 +902,23 @@ def _compute_gcp_triangulations(
 def _compute_gcp_3d_errors(
     reconstruction: types.Reconstruction,
     gcp: List[pymap.GroundControlPoint],
-    triangulations: Dict[str, Optional[np.ndarray]]
+    triangulations: Dict[str, Optional[np.ndarray]],
+    centering: Optional[np.ndarray] = None,
 ) -> Dict[str, float]:
     errors = {}
     reference = reconstruction.reference
     for point in gcp:
-        if point.lla and point.id in triangulations and triangulations[point.id] is not None:
-             ref_pos = reference.to_topocentric(*point.lla_vec)
+        if point.id in triangulations and triangulations[point.id] is not None:
              comp_pos = triangulations[point.id]
-             errors[point.id] = np.linalg.norm(comp_pos - ref_pos)
+             
+             if centering is not None:
+                 ref_pos = np.array(point.coordinates) + centering
+                 errors[point.id] = np.linalg.norm(comp_pos - ref_pos)
+             elif point.lla:
+                 ref_pos = reference.to_topocentric(*point.lla_vec)
+                 errors[point.id] = np.linalg.norm(comp_pos - ref_pos)
+             else:
+                 errors[point.id] = -1.0
         else:
              errors[point.id] = -1.0
     return errors
@@ -960,15 +1007,20 @@ def _export_gcp_3d(
     gcp: List[pymap.GroundControlPoint],
     triangulations: Dict[str, Optional[np.ndarray]],
     gcp_3d_errors: Dict[str, float],
-    drawer: Drawer
+    drawer: Drawer,
+    centering: Optional[np.ndarray] = None,
 ) -> None:
     reference = reconstruction.reference
     count = 0
     for point in gcp:
-        if point.lla:
+        pos = None
+        if centering is not None:
+             pos = np.array(point.coordinates) + centering
+        elif point.lla:
             pos = reference.to_topocentric(*point.lla_vec)
+
+        if pos is not None:
             triangulated = triangulations.get(point.id)
-            
             error = gcp_3d_errors.get(point.id, -1.0)
 
             drawer.log_gcp_3d(point.id, pos, triangulated, error)
