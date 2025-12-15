@@ -1,7 +1,8 @@
 # pyre-strict
-from typing import overload, Sequence, Tuple, Union
+from typing import List, overload, Sequence, Tuple, Union
 
 import numpy as np
+import pyproj
 from numpy.typing import NDArray
 
 Scalars = Union[float, NDArray]
@@ -250,26 +251,6 @@ def gps_distance(
 def gps_distance(latlon_1: NDArray, latlon_2: NDArray) -> NDArray: ...
 
 
-def gps_distance(
-    latlon_1: Union[Sequence[Scalars], NDArray],
-    latlon_2: Union[Sequence[Scalars], NDArray],
-) -> Scalars:
-    """
-    Distance between two (lat,lon) pairs.
-
-    >>> p1 = (42.1, -11.1)
-    >>> p2 = (42.2, -11.3)
-    >>> 19000 < gps_distance(p1, p2) < 20000
-    True
-    """
-    x1, y1, z1 = ecef_from_lla(latlon_1[0], latlon_1[1], 0.0)
-    x2, y2, z2 = ecef_from_lla(latlon_2[0], latlon_2[1], 0.0)
-
-    dis = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
-
-    return dis
-
-
 class TopocentricConverter:
     """Convert to and from a topocentric reference frame."""
 
@@ -311,3 +292,108 @@ class TopocentricConverter:
 
     def __eq__(self, o: "TopocentricConverter") -> bool:
         return np.allclose([self.lat, self.lon, self.alt], (o.lat, o.lon, o.alt))
+    
+
+def construct_proj_transformer(proj_str: str, inverse: bool = False) -> pyproj.Transformer:
+    """
+    Construct a pyproj Transformer object, converting between the given projection antod WGS84 (EPSG:4326).
+    If inverse is True, the transformation is from WGS84 to the given projection.
+    """
+    crs_4326 = pyproj.CRS.from_epsg(4326)
+    if inverse:
+        return pyproj.Transformer.from_proj(crs_4326, pyproj.CRS(proj_str))
+    else:
+        return pyproj.Transformer.from_proj(pyproj.CRS(proj_str), crs_4326)
+
+
+def transform_to_proj(
+    point: Sequence[float], reference: TopocentricConverter, projection: pyproj.Transformer
+) -> List[float]:
+    """
+    Transform a point defined wrt. the local topocentric frame to a projection
+    defined by the given Transformer. We assume the Transformer goes from
+    WGS84 to the desired projection.
+    """
+    assert projection.source_crs.to_epsg() == 4326, "Transformer source CRS must be WGS84 (EPSG:4326)"
+
+    lat, lon, altitude = reference.to_lla(point[0], point[1], point[2])
+    easting, northing = projection.transform(lat, lon)
+    return [easting, northing, altitude]
+
+
+def get_proj_transform_matrix(
+    reference: TopocentricConverter, projection: pyproj.Transformer
+) -> NDArray:
+    """Get the linear transform from reconstruction coords to geocoords."""
+    p = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0]]
+    q = [transform_to_proj(point, reference, projection) for point in p]
+
+    transformation = np.array(
+        [
+            [q[0][0] - q[3][0], q[1][0] - q[3][0], q[2][0] - q[3][0], q[3][0]],
+            [q[0][1] - q[3][1], q[1][1] - q[3][1], q[2][1] - q[3][1], q[3][1]],
+            [q[0][2] - q[3][2], q[1][2] - q[3][2], q[2][2] - q[3][2], q[3][2]],
+            [0, 0, 0, 1],
+        ]
+    )
+    return transformation
+
+
+def transform_reconstruction_with_matrix(
+    reconstruction: "types.Reconstruction", transformation: NDArray
+) -> None:
+    """Apply a rigid transformation to a reconstruction in-place."""
+    A, b = transformation[:3, :3], transformation[:3, 3]
+    A1 = np.linalg.inv(A)
+
+    for shot in reconstruction.shots.values():
+        R = shot.pose.get_rotation_matrix()
+        shot.pose.set_rotation_matrix(np.dot(R, A1))
+        shot.pose.set_origin(np.dot(A, shot.pose.get_origin()) + b)
+
+    for point in reconstruction.points.values():
+        point.coordinates = list(np.dot(A, point.coordinates) + b)
+
+
+def transform_reconstruction_with_proj(
+    reconstruction: "types.Reconstruction", transformation: pyproj.Transformer
+) -> None:
+    """Apply a proj Transformer to a reconstruction in-place."""
+    eps = 1e-3
+    for shot in reconstruction.shots.values():
+        origin = shot.pose.get_origin()
+                    
+        # Jacobian for rotation update
+        p0 = np.array(transform_to_proj(origin, reconstruction.reference, transformation))
+        px = np.array(transform_to_proj(origin + [eps, 0, 0], reconstruction.reference, transformation))
+        py = np.array(transform_to_proj(origin + [0, eps, 0], reconstruction.reference, transformation))
+        pz = np.array(transform_to_proj(origin + [0, 0, eps], reconstruction.reference, transformation))
+        J = np.column_stack(((px - p0) / eps, (py - p0) / eps, (pz - p0) / eps))
+        
+        shot.pose.set_origin(p0)
+        shot.pose.set_rotation_matrix(shot.pose.get_rotation_matrix() @ np.linalg.inv(J))
+
+    for point in reconstruction.points.values():
+        point.coordinates = transform_to_proj(
+            point.coordinates, reconstruction.reference, transformation
+        )
+
+
+def gps_distance(
+    latlon_1: Union[Sequence[Scalars], NDArray],
+    latlon_2: Union[Sequence[Scalars], NDArray],
+) -> Scalars:
+    """
+    Distance between two (lat,lon) pairs.
+
+    >>> p1 = (42.1, -11.1)
+    >>> p2 = (42.2, -11.3)
+    >>> 19000 < gps_distance(p1, p2) < 20000
+    True
+    """
+    x1, y1, z1 = ecef_from_lla(latlon_1[0], latlon_1[1], 0.0)
+    x2, y2, z2 = ecef_from_lla(latlon_2[0], latlon_2[1], 0.0)
+
+    dis = np.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2)
+
+    return dis
