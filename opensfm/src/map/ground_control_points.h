@@ -47,6 +47,7 @@ struct GroundControlPoint {
   bool has_altitude_ = false;
   AlignedVector<GroundControlPointObservation> observations_;
   std::map<std::string, double> lla_;
+  Vec3d coordinates_ = Vec3d::Zero();
   GroundControlPointRole role_;
 
   Vec3d GetLlaVec3d() const {

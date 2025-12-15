@@ -272,6 +272,7 @@ PYBIND11_MODULE(pymap, m) {
                      &map::GroundControlPoint::survey_point_id_)
       .def_readwrite("has_altitude", &map::GroundControlPoint::has_altitude_)
       .def_readwrite("lla", &map::GroundControlPoint::lla_)
+      .def_readwrite("coordinates", &map::GroundControlPoint::coordinates_)
       .def_property("lla_vec", &map::GroundControlPoint::GetLlaVec3d,
                     &map::GroundControlPoint::SetLla)
       .def_readwrite("role", &map::GroundControlPoint::role_)
