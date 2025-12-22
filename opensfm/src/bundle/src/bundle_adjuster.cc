@@ -1108,7 +1108,8 @@ void BundleAdjuster::Run() {
   }
   options.num_threads = num_threads_;
   options.max_num_iterations = max_num_iterations_;
-  options.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
+  options.sparse_linear_algebra_library_type = ceres::CUDA_SPARSE;
+  options.dense_linear_algebra_library_type = ceres::CUDA;
 
   ceres::Solve(options, &problem, &last_run_summary_);
 
