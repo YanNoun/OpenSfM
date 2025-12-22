@@ -6,7 +6,7 @@ dependencies:
     - libxcrypt
     - libopencv *=headless*
     - py-opencv
-    - conda-forge::ceres-solver==2.2.0-gpu
+    - conda-forge::ceres-solver=2.2.0=*_gpulgpl*
     - conda-forge::llvm-openmp
     - conda-forge::cxx-compiler
     - anaconda::suitesparse
