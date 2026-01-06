@@ -1,14 +1,18 @@
 # pyre-strict
 import logging
+import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
+from io import BytesIO
 from typing import Dict, List, Optional, Sequence, Tuple, Any
 import base64
 import os
 
 import numpy as np
 import pyproj
-from opensfm import features, multiview, pymap, types, io
+import cv2
+from PIL import Image as PILImage  # type: ignore[import-not-found]
+from opensfm import features, multiview, pymap, types, io, geometry
 from opensfm import geo
 from opensfm.dataset import DataSet
 from opensfm import pygeometry
@@ -18,7 +22,7 @@ from opensfm.actions import export_geocoords
 import matplotlib.cm as cm
 import rerun as rr
 import rerun.blueprint as rrb
-from scipy.spatial import Delaunay
+from scipy.spatial import Delaunay, KDTree
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -77,10 +81,6 @@ class Drawer(ABC):
         pass
 
     @abstractmethod
-    def set_time(self, sequence_id: int) -> None:
-        pass
-
-    @abstractmethod
     def log_shot(
         self,
         shot_id: str,
@@ -88,6 +88,17 @@ class Drawer(ABC):
         camera: pygeometry.Camera,
         image: Optional[np.ndarray],
         image_plane_distance: float,
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def log_exif_orientation(
+        self,
+        shot_id: str,
+        R: np.ndarray,
+        t: np.ndarray,
+        camera: pygeometry.Camera,
+        image_plane_distance: float = 1.0,
     ) -> None:
         pass
 
@@ -160,7 +171,7 @@ class Drawer(ABC):
         pass
 
     @abstractmethod
-    def setup_blueprint(self) -> None:
+    def setup_blueprint(self, camera_ids: Sequence[str]) -> None:
         pass
 
 
@@ -172,38 +183,74 @@ class RerunDrawer(Drawer):
         rr.save(output_path)
         rr.log("/", rr.ViewCoordinates.RIGHT_HAND_Z_UP)
 
-    def setup_blueprint(self) -> None:
+    def setup_blueprint(self, camera_ids: Sequence[str]) -> None:
+        # Left: summary + processing time + GPS/GCP errors + per-camera biases (stacked vertically)
+        bias_views = [
+            rrb.TextDocumentView(
+                origin=f"STATS/BIAS/{_sanitize_entity_path_component(cam)}",
+                name=f"CAMERA {cam} Bias",
+            )
+            for cam in camera_ids
+        ]
+
+        # Right: spatial viewport, then per-camera (params + residual + heatmap) rows
+        camera_rows = [
+            rrb.Horizontal(
+                rrb.TextDocumentView(
+                    origin=f"STATS/CAMERAS/{_sanitize_entity_path_component(cam)}/PARAMS",
+                    name=f"{cam} Params",
+                ),
+                rrb.Spatial2DView(
+                    origin=f"STATS/CAMERAS/{_sanitize_entity_path_component(cam)}/RESIDUAL",
+                    name=f"{cam} Residuals",
+                ),
+                rrb.Spatial2DView(
+                    origin=f"STATS/CAMERAS/{_sanitize_entity_path_component(cam)}/HEATMAP",
+                    name=f"{cam} Heatmap",
+                ),
+            )
+            for cam in camera_ids
+        ]
+
         blueprint = rrb.Blueprint(
-            rrb.Vertical(
-                rrb.Horizontal(
-                    rrb.Spatial3DView(
-                        origin="/WORLD",
-                        name="3D Scene",
-                        background=[13, 17, 23],  # Deep dark gray
-                        line_grid=rrb.LineGrid3D(visible=False),
-                        spatial_information=rrb.SpatialInformation(
-                            show_axes=False,
-                            show_bounding_box=False,
+            rrb.Horizontal(
+                rrb.Vertical(
+                    rrb.TextDocumentView(
+                        origin="STATS/SUMMARY", name="Processing Summary"),
+                    rrb.TextDocumentView(
+                        origin="STATS/PROCESSING_TIME", name="Processing Time Details"),
+                    rrb.TextDocumentView(
+                        origin="STATS/ERRORS/GPS", name="GPS Errors"),
+                    rrb.TextDocumentView(
+                        origin="STATS/ERRORS/GCP", name="GCP Errors"),
+                    rrb.TextDocumentView(
+                        origin="STATS/ERRORS/ORIENTATION", name="Orientation Errors"),
+                    *bias_views,
+                ),
+                rrb.Vertical(
+                    rrb.Horizontal(
+                        rrb.Spatial3DView(
+                            origin="WORLD",
+                            name="3D Scene",
+                            background=[13, 17, 23],
+                            line_grid=rrb.LineGrid3D(visible=False),
+                            spatial_information=rrb.SpatialInformation(
+                                show_axes=False,
+                                show_bounding_box=False,
+                            ),
                         ),
+                        rrb.Spatial2DView(origin="SHOTS", name="Image View"),
                     ),
-                    rrb.Spatial2DView(
-                        origin="/SHOTS",
-                        name="Image View",
-                    ),
+                    rrb.Vertical(*camera_rows),
+                    row_shares=[0.8, 0.2],
                 ),
-                rrb.Horizontal(
-                    rrb.TextDocumentView(origin="/STATS/SUMMARY", name="Summary"),
-                    rrb.TextDocumentView(origin="/STATS/CAMERAS", name="Camera Models"),
-                    rrb.TextDocumentView(origin="/STATS/GPS", name="GPS/GCP Details"),
-                ),
-                row_shares=[5, 2],
+                rrb.BlueprintPanel(state="expanded"),
+                rrb.SelectionPanel(state="collapsed"),
+                rrb.TimePanel(state="collapsed"),
+                column_shares=[0.15, 0.85],
             ),
-            collapse_panels=True,
         )
         rr.send_blueprint(blueprint)
-
-    def set_time(self, sequence_id: int) -> None:
-        rr.set_time_sequence("SHOTS", sequence_id)
 
     def log_shot(
         self,
@@ -216,7 +263,7 @@ class RerunDrawer(Drawer):
         # Pose
         t = pose.get_origin()
         R_world_from_camera = pose.get_rotation_matrix().T
-        
+
         rr.log(
             f"WORLD/SHOTS/{shot_id}",
             rr.Transform3D(
@@ -224,8 +271,9 @@ class RerunDrawer(Drawer):
                 mat3x3=R_world_from_camera,
                 from_parent=False,
             ),
+            static=True,
         )
-        
+
         labels_shift = np.array([0, 0, SIZE_LABEL_SHIFT_SHOT])
         rr.log(
             f"WORLD/SHOTS/{shot_id}",
@@ -252,12 +300,53 @@ class RerunDrawer(Drawer):
                 principal_point=[cx, cy],
                 image_plane_distance=image_plane_distance,
             ),
+            static=True,
         )
 
         if image is not None:
-            img_compressed = rr.Image(image).compress(jpeg_quality=IMAGE_COMPRESSION_QUALITY)
-            rr.log(f"WORLD/SHOTS/{shot_id}/CAMERA/IMAGE", img_compressed)
-            rr.log(f"SHOTS/IMAGE", img_compressed)
+            img_compressed = rr.Image(image).compress(
+                jpeg_quality=IMAGE_COMPRESSION_QUALITY)
+            rr.log(f"WORLD/SHOTS/{shot_id}/CAMERA/IMAGE",
+                   img_compressed, static=True)
+            rr.log(f"SHOTS/IMAGE", img_compressed, static=True)
+
+    def log_exif_orientation(
+        self,
+        shot_id: str,
+        R: np.ndarray,
+        t: np.ndarray,
+        camera: pygeometry.Camera,
+        image_plane_distance: float = 1.0,
+    ) -> None:
+        path = f"WORLD/EXIF_SHOTS/{shot_id}"
+
+        # Log transform (camera-to-world)
+        rr.log(
+            path,
+            rr.Transform3D(
+                translation=t,
+                mat3x3=R.T,
+                from_parent=False,
+            ),
+            static=True,
+        )
+
+        # Log pinhole
+        width = int(camera.width)
+        height = int(camera.height)
+        width, height = _get_scaled_dimensions(width, height)
+        fx, fy, cx, cy = _get_camera_calibration(camera, width, height)
+
+        rr.log(
+            f"{path}/EXIF_SHOTS/CAMERA",
+            rr.Pinhole(
+                resolution=[width, height],
+                focal_length=[fx, fy],
+                principal_point=[cx, cy],
+                image_plane_distance=image_plane_distance,
+            ),
+            static=True,
+        )
 
     def log_gps(
         self,
@@ -333,6 +422,7 @@ class RerunDrawer(Drawer):
                     colors=box_colors,
                     radii=SIZE_GCP_2D_THICKNESS,
                 ),
+                static=True,
             )
             rr.log(
                 f"SHOTS/IMAGE/GCP/REFERENCE/OUTLINE",
@@ -342,11 +432,14 @@ class RerunDrawer(Drawer):
                     colors=outline_colors,
                     radii=SIZE_GCP_2D_THICKNESS,
                 ),
+                static=True,
             )
         else:
             rr.log(f"SHOTS/IMAGE/GCP/REFERENCE", rr.Clear(recursive=True))
-            rr.log(f"SHOTS/IMAGE/GCP/REFERENCE/OUTLINE", rr.Clear(recursive=True))
-            rr.log(f"SHOTS/IMAGE/GCP/REFERENCE/LABELS", rr.Clear(recursive=True))
+            rr.log(f"SHOTS/IMAGE/GCP/REFERENCE/OUTLINE",
+                   rr.Clear(recursive=True))
+            rr.log(f"SHOTS/IMAGE/GCP/REFERENCE/LABELS",
+                   rr.Clear(recursive=True))
 
         # Computed: Arrow
         if comps:
@@ -369,7 +462,7 @@ class RerunDrawer(Drawer):
                         valid_labels.append(f"{label}: {error_3d:.3f}m")
                     else:
                         valid_labels.append(label)
-            
+
             if origins:
                 rr.log(
                     f"SHOTS/IMAGE/GCP/COMPUTED",
@@ -380,6 +473,7 @@ class RerunDrawer(Drawer):
                         labels=valid_labels,
                         radii=SIZE_GCP_2D_THICKNESS,
                     ),
+                    static=True,
                 )
             else:
                 rr.log(f"SHOTS/IMAGE/GCP/COMPUTED", rr.Clear(recursive=True))
@@ -427,7 +521,7 @@ class RerunDrawer(Drawer):
             pos_np + [quad_r, -quad_r, 0]
         ]
         half_sizes = [[quad_r, quad_r, thickness]] * 2
-        
+
         rr.log(
             f"{base_path}/TARGET",
             rr.Boxes3D(
@@ -442,7 +536,8 @@ class RerunDrawer(Drawer):
             f"{base_path}/OUTLINE",
             rr.Boxes3D(
                 centers=[pos_np],
-                half_sizes=[[SIZE_GCP_TARGET / 2.0, SIZE_GCP_TARGET / 2.0, thickness]],
+                half_sizes=[[SIZE_GCP_TARGET / 2.0,
+                             SIZE_GCP_TARGET / 2.0, thickness]],
                 colors=[color],
                 radii=thickness,
                 fill_mode="major_wireframe",
@@ -519,97 +614,71 @@ class RerunDrawer(Drawer):
         if "camera_errors" not in stats:
             return
 
-        md = "# Camera Models Details\n\n"
-        
         for camera, params in stats["camera_errors"].items():
-            md += f"## Camera: {camera}\n"
-            
+            sanitized_id = _sanitize_entity_path_component(camera)
+            sanitized_id_spaces = _sanitize_entity_path_component(
+                camera, strip_spaces=False)
+
             initial = params.get("initial_values", {})
             optimized = params.get("optimized_values", {})
-            
-            # Collect all parameter names
+
             keys = sorted(list(set(initial.keys()) | set(optimized.keys())))
-            
-            md += "| State | " + " | ".join(keys) + " |\n"
-            md += "| --- | " + " | ".join(["---"] * len(keys)) + " |\n"
-            
-            # Initial values row
-            row_init = "| Initial |"
+            columns = {"State": ["Initial", "Optimized"]}
             for k in keys:
-                val = initial.get(k, "N/A")
-                if isinstance(val, float): val = f"{val:.4f}"
-                row_init += f" {val} |"
-            md += row_init + "\n"
+                columns[k] = [initial.get(k), optimized.get(k)]
 
-            # Optimized values row
-            row_opt = "| Optimized |"
-            for k in keys:
-                val = optimized.get(k, "N/A")
-                if isinstance(val, float): val = f"{val:.4f}"
-                row_opt += f" {val} |"
-            md += row_opt + "\n\n"
+            _log_dataframe(
+                f"STATS/CAMERAS/{sanitized_id}/PARAMS",
+                columns,
+                static=True,
+            )
 
-            # Embed residual and heatmap images
-            sanitized_id = camera.replace("/", "_")
-            res_path = os.path.join(data.data_path, "stats", f"residuals_{sanitized_id}.png")
-            heat_path = os.path.join(data.data_path, "stats", f"heatmap_{sanitized_id}.png")
-            
-            res_b64 = None
-            if data.io_handler.isfile(res_path):
-                try:
-                    with data.io_handler.open_rb(res_path) as f:
-                        res_b64 = base64.b64encode(f.read()).decode("utf-8")
-                except Exception as e:
-                    logger.warning(f"Failed to embed residual image for {camera}: {e}")
+            # Residuals + heatmap as real images for Spatial2D views
+            res_path = os.path.join(
+                data.data_path, "stats", f"residuals_{sanitized_id_spaces}.png")
+            heat_path = os.path.join(
+                data.data_path, "stats", f"heatmap_{sanitized_id_spaces}.png")
 
-            heat_b64 = None
-            if data.io_handler.isfile(heat_path):
-                try:
-                    with data.io_handler.open_rb(heat_path) as f:
-                        heat_b64 = base64.b64encode(f.read()).decode("utf-8")
-                except Exception as e:
-                    logger.warning(f"Failed to embed heatmap image for {camera}: {e}")
+            res_img = _try_load_image_as_numpy(data, res_path)
+            if res_img is not None:
+                rr.log(f"STATS/CAMERAS/{sanitized_id}/RESIDUAL",
+                       rr.Image(res_img), static=True)
 
-            if res_b64 or heat_b64:
-                md += "| Residuals | Heatmap |\n"
-                md += "| :---: | :---: |\n"
-                c1 = f"![Residuals](data:image/png;base64,{res_b64})" if res_b64 else ""
-                c2 = f"![Heatmap](data:image/png;base64,{heat_b64})" if heat_b64 else ""
-                md += f"| {c1} | {c2} |\n\n"
-
-        rr.log("STATS/CAMERAS", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN), static=True)
+            heat_img = _try_load_image_as_numpy(data, heat_path)
+            if heat_img is not None:
+                rr.log(f"STATS/CAMERAS/{sanitized_id}/HEATMAP",
+                       rr.Image(heat_img), static=True)
 
     def log_stats_summary(self, stats: Dict[str, Any]) -> None:
+        # Keep Dataset + Reconstruction as markdown, but remove the time-details table (moved to DataFrame)
         md = "# Processing Summary\n\n"
 
-        # Dataset Summary
         if "processing_statistics" in stats:
             ps = stats["processing_statistics"]
             md += "## Dataset\n"
             md += f"- **Date**: {ps.get('date', 'N/A')}\n"
             if "area" in ps:
-                md += f"- **Area Covered**: {ps['area']/1e6:.6f} km²\n"
-            if "steps_times" in ps:
-                if "Total Time" in ps["steps_times"]:
-                    md += f"- **Total Time**: {ps['steps_times']['Total Time']:.2f} s\n"
-
-                md += "\n### Processing Time Details\n"
-                md += "| Step | Time |\n"
-                md += "| --- | --- |\n"
-                for step, time in ps["steps_times"].items():
-                    if step == "Total Time":
-                        continue
-                    md += f"| {step} | {time:.2f} s |\n"
+                md += f"- **Area Covered**: {ps['area'] / 1e6:.6f} km²\n"
+            if "steps_times" in ps and "Total Time" in ps["steps_times"]:
+                md += f"- **Total Time**: {ps['steps_times']['Total Time']:.2f} s\n"
             md += "\n"
 
-        # Reconstruction Summary
+            if "steps_times" in ps:
+                steps = list(ps["steps_times"].keys())
+                times = [float(ps["steps_times"][s]) for s in steps]
+                _log_dataframe(
+                    "STATS/PROCESSING_TIME",
+                    {"Step": steps, "Time (seconds)": times},
+                    static=True,
+                )
+
         if "reconstruction_statistics" in stats:
             rs = stats["reconstruction_statistics"]
             rec_shots = rs.get("reconstructed_shots_count", 0)
             init_shots = rs.get("initial_shots_count", 0)
             rec_points = rs.get("reconstructed_points_count", 0)
             init_points = rs.get("initial_points_count", 0)
-            
+
             ratio_shots = rec_shots / init_shots * 100 if init_shots > 0 else 0
             ratio_points = rec_points / init_points * 100 if init_points > 0 else 0
 
@@ -617,7 +686,7 @@ class RerunDrawer(Drawer):
             md += f"- **Images**: {rec_shots}/{init_shots} ({ratio_shots:.1f}%)\n"
             md += f"- **Points**: {rec_points}/{init_points} ({ratio_points:.1f}%)\n"
             md += f"- **Components**: {rs.get('components', 0)}\n"
-            
+
             if "features_statistics" in stats:
                 fs = stats["features_statistics"]
                 if "detected_features" in fs:
@@ -625,50 +694,84 @@ class RerunDrawer(Drawer):
                 if "reconstructed_features" in fs:
                     md += f"- **Reconstructed Features (median)**: {fs['reconstructed_features'].get('median', 'N/A')}\n"
 
-        rr.log("STATS/SUMMARY", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN), static=True)
+        rr.log(
+            "STATS/SUMMARY",
+            rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN),
+            static=True,
+        )
 
     def log_stats_gps_bias(self, stats: Dict[str, Any]) -> None:
-        md = "# GPS/GCP Details\n\n"
+        def _log_errors_df(
+            dst_path: str,
+            err_stats: Dict[str, Any],
+            comps: Optional[List[str]] = None,
+            unit: str = "meters",
+        ) -> None:
+            if comps is None:
+                comps = ["x", "y", "z"]
 
-        # Errors
-        for error_type in ["gps", "gcp"]:
-            key = f"{error_type}_errors"
-            if key not in stats or "average_error" not in stats[key]:
-                continue
-            
-            err_stats = stats[key]
-            md += f"## {error_type.upper()} Errors (meters)\n"
-            md += "| Component | Mean | Sigma | RMS Error |\n"
-            md += "| --- | --- | --- | --- |\n"
-            
-            for comp in ["x", "y", "z"]:
-                mean = err_stats.get("mean", {}).get(comp, 0)
-                std = err_stats.get("std", {}).get(comp, 0)
-                rms = err_stats.get("error", {}).get(comp, 0)
-                md += f"| {comp.upper()} | {mean:.3f} | {std:.3f} | {rms:.3f} |\n"
-            
-            avg = err_stats.get("average_error", 0)
-            md += f"| **Total** | | | **{avg:.3f}** |\n\n"
+            rows_component: List[str] = []
+            rows_mean: List[Optional[float]] = []
+            rows_sigma: List[Optional[float]] = []
+            rows_rms: List[Optional[float]] = []
 
-        # GPS Bias
+            for c in comps:
+                rows_component.append(c.upper() if len(c)
+                                      == 1 else c.capitalize())
+                rows_mean.append(float(err_stats.get("mean", {}).get(c, 0.0)))
+                rows_sigma.append(float(err_stats.get("std", {}).get(c, 0.0)))
+                rows_rms.append(float(err_stats.get("error", {}).get(c, 0.0)))
+
+            rows_component.append("TOTAL")
+            rows_mean.append(None)
+            rows_sigma.append(None)
+            rows_rms.append(float(err_stats.get("average_error", 0.0)))
+
+            _log_dataframe(
+                dst_path,
+                {
+                    "Component": rows_component,
+                    f"Mean ({unit})": rows_mean,
+                    f"Sigma ({unit})": rows_sigma,
+                    f"RMS ({unit})": rows_rms,
+                },
+                static=True,
+            )
+
+        gps_key = "gps_errors"
+        if gps_key in stats and "average_error" in stats[gps_key]:
+            _log_errors_df("STATS/ERRORS/GPS", stats[gps_key])
+
+        gcp_key = "gcp_errors"
+        if gcp_key in stats and "average_error" in stats[gcp_key]:
+            _log_errors_df("STATS/ERRORS/GCP", stats[gcp_key])
+
+        opk_key = "opk_errors"
+        if opk_key in stats and "average_error" in stats[opk_key]:
+            _log_errors_df(
+                "STATS/ERRORS/ORIENTATION",
+                stats[opk_key],
+                comps=["omega", "phi", "kappa"],
+                unit="degrees",
+            )
+
         if "camera_errors" in stats:
-            md += "## GPS Bias\n"
-            md += "| Camera | Scale | Translation | Rotation |\n"
-            md += "| --- | --- | --- | --- |\n"
-            
             for camera, params in stats["camera_errors"].items():
-                if "bias" in params:
-                    bias = params["bias"]
-                    s = bias.get("scale", 1.0)
-                    t = bias.get("translation", [0,0,0])
-                    r = bias.get("rotation", [0,0,0])
-                    
-                    t_str = f"[{t[0]:.2f}, {t[1]:.2f}, {t[2]:.2f}]"
-                    r_str = f"[{r[0]:.2f}, {r[1]:.2f}, {r[2]:.2f}]"
-                    
-                    md += f"| {camera} | {s:.2f} | {t_str} | {r_str} |\n"
+                if "bias" not in params:
+                    continue
+                bias = params["bias"]
+                s = float(bias.get("scale", 1.0))
+                t = bias.get("translation", [0.0, 0.0, 0.0])
+                r = bias.get("rotation", [0.0, 0.0, 0.0])
 
-        rr.log("STATS/GPS", rr.TextDocument(md, media_type=rr.MediaType.MARKDOWN), static=True)
+                _log_dataframe(
+                    f"STATS/BIAS/{_sanitize_entity_path_component(camera)}",
+                    {
+                        "Component": ["Scale", "Translation X", "Translation Y", "Translation Z", "Rotation X", "Rotation Y", "Rotation Z"],
+                        "Value (meters or degrees)": [s, float(t[0]), float(t[1]), float(t[2]), float(r[0]), float(r[1]), float(r[2])],
+                    },
+                    static=True,
+                )
 
 
 # --- Main Logic ---
@@ -680,7 +783,7 @@ def run_dataset(
     proj: bool = False,
 ) -> None:
     """Export reconstruction to Rerun format for 3D visualization."""
-    
+
     # 1. Load Data
     reconstructions = data.load_reconstruction()
     if not reconstructions:
@@ -688,32 +791,39 @@ def run_dataset(
         return
 
     if reconstruction_index >= len(reconstructions):
-        logger.error(f"Reconstruction index {reconstruction_index} out of range")
+        logger.error(
+            f"Reconstruction index {reconstruction_index} out of range")
         return
 
     reconstruction = reconstructions[reconstruction_index]
 
     centering = None
+    projection = None
     if proj:
         gcp_list_file = data._gcp_list_file()
         if data.io_handler.isfile(gcp_list_file):
             with data.io_handler.open_rt(gcp_list_file) as f:
                 proj_str = io.read_gcp_projection_string(f)
-            
+
             if proj_str:
-                logger.info(f"Transforming reconstruction to geocoords: {proj_str}")
+                logger.info(
+                    f"Transforming reconstruction to geocoords: {proj_str}")
                 reference = data.load_reference()
 
                 # Transform to the GCP CS
-                projection = geo.construct_proj_transformer(proj_str, inverse=True)
-                geo.transform_reconstruction_with_proj(reconstruction, projection)
+                projection = geo.construct_proj_transformer(
+                    proj_str, inverse=True)
+                geo.transform_reconstruction_with_proj(
+                    reconstruction, projection)
 
                 # Center the reconstruction to avoid large coordinates
-                all_points = [p.coordinates for p in reconstruction.points.values()]
+                all_points = [
+                    p.coordinates for p in reconstruction.points.values()]
                 if all_points:
                     center = np.mean(all_points, axis=0)
                 else:
-                    all_origins = [shot.pose.get_origin() for shot in reconstruction.shots.values()]
+                    all_origins = [shot.pose.get_origin()
+                                   for shot in reconstruction.shots.values()]
                     if all_origins:
                         center = np.mean(all_origins, axis=0)
                     else:
@@ -721,13 +831,13 @@ def run_dataset(
 
                 logger.info(f"Centering reconstruction at {center}")
                 centering = -center
-                
+
                 for point in reconstruction.points.values():
                     point.coordinates += centering
                 for shot in reconstruction.shots.values():
                     shot.pose.set_origin(shot.pose.get_origin() + centering)
         else:
-             logger.warning("No gcp_list.txt found, skipping projection.")
+            logger.warning("No gcp_list.txt found, skipping projection.")
 
     logger.info(
         f"Exporting reconstruction {reconstruction_index} with "
@@ -739,24 +849,29 @@ def run_dataset(
     output_path = output or data.data_path + "/rerun.rrd"
     drawer = RerunDrawer()
     drawer.init("OpenSfM Reconstruction", output_path)
-    drawer.setup_blueprint()
+
+    camera_ids = sorted(
+        {shot.camera.id for shot in reconstruction.shots.values()})
+
+    drawer.setup_blueprint(camera_ids)
     logger.info(f"Saving Rerun data to {output_path}")
 
     # 3. Precompute Data
     image_plane_distance = _compute_image_plane_distance(reconstruction)
-    
+
     # Precompute GCP observations per shot
     gcp = data.load_ground_control_points() or []
     gcp_triangulations = _compute_gcp_triangulations(data, reconstruction, gcp)
-    gcp_3d_errors = _compute_gcp_3d_errors(reconstruction, gcp, gcp_triangulations, centering)
-    shot_gcp_obs = _precompute_gcp_observations(data, reconstruction, gcp, gcp_triangulations)
+    gcp_3d_errors = _compute_gcp_3d_errors(
+        reconstruction, gcp, gcp_triangulations, centering)
+    shot_gcp_obs = _precompute_gcp_observations(
+        data, reconstruction, gcp, gcp_triangulations)
 
     # 4. Time-Dependent Logging (Shots)
     reference = reconstruction.reference
-    
+
     for shot_id, shot in reconstruction.shots.items():
         sequence_id = _get_shot_sequence_id(shot_id)
-        drawer.set_time(sequence_id)
 
         # Load image
         image = None
@@ -766,24 +881,41 @@ def run_dataset(
             height = int(shot.camera.height)
             width, height = _get_scaled_dimensions(width, height)
             if image.shape[1] != width or image.shape[0] != height:
-                import cv2
-                image = cv2.resize(image, (width, height), interpolation=cv2.INTER_AREA)
+                image = cv2.resize(image, (width, height),
+                                   interpolation=cv2.INTER_AREA)
         except Exception as e:
             logger.warning(f"Could not load image for {shot_id}: {e}")
 
         # Log Shot Pose & Image
-        drawer.log_shot(shot_id, shot.pose, shot.camera, image, image_plane_distance)
+        drawer.log_shot(shot_id, shot.pose, shot.camera,
+                        image, image_plane_distance)
 
-        # Log GPS
+        # Log GPS & EXIF Orientation
+        gps_pos = None
         if reference and shot.metadata and shot.metadata.gps_position.has_value:
             gps_topo = shot.metadata.gps_position.value
             gps_pos = gps_topo
             if projection is not None:
-                gps_pos = np.array(geo.transform_to_proj(gps_topo, reference, projection))
+                gps_pos = np.array(geo.transform_to_proj(
+                    gps_topo, reference, projection))
                 if centering is not None:
                     gps_pos += centering
 
             drawer.log_gps(shot_id, shot.pose, gps_pos)
+
+        has_opk = shot.metadata and shot.metadata.opk_angles.has_value
+        if gps_pos is not None or has_opk:
+            t_exif = shot.pose.get_origin()
+            if has_opk:
+                opk = shot.metadata.opk_angles.value
+                R_exif = geometry.rotation_from_opk(
+                    np.radians(opk[0]), np.radians(opk[1]), np.radians(opk[2])
+                )
+            else:
+                R_exif = shot.pose.get_rotation_matrix()
+
+            drawer.log_exif_orientation(
+                shot_id, R_exif, t_exif, shot.camera, image_plane_distance)
 
         # Log GCP 2D Observations
         if shot_id in shot_gcp_obs:
@@ -797,10 +929,11 @@ def run_dataset(
                 gcp_3d_errors,
             )
         else:
-            drawer.log_gcp_2d_observations(shot_id, [], [], [], [], gcp_3d_errors)
+            drawer.log_gcp_2d_observations(
+                shot_id, [], [], [], [], gcp_3d_errors)
 
     # 5. Static Logging (Structure & Stats)
-    
+
     # Reference
     if reconstruction.reference:
         ref = reconstruction.reference
@@ -824,7 +957,8 @@ def run_dataset(
 
     # GCP 3D Geometry
     if gcp:
-        _export_gcp_3d(data, reconstruction, gcp, gcp_triangulations, gcp_3d_errors, drawer, centering)
+        _export_gcp_3d(data, reconstruction, gcp,
+                       gcp_triangulations, gcp_3d_errors, drawer, centering)
 
     # Match Graph
     if data.tracks_exists():
@@ -842,7 +976,6 @@ def run_dataset(
 
 def _get_shot_sequence_id(shot_id: str) -> int:
     try:
-        import re
         numbers = re.findall(r'\d+', shot_id)
         if numbers:
             return int(numbers[-1])
@@ -859,11 +992,11 @@ def _get_scaled_dimensions(width: int, height: int) -> tuple[int, int]:
 
 
 def _compute_image_plane_distance(reconstruction: types.Reconstruction) -> float:
-    positions = np.array([shot.pose.get_origin() for shot in reconstruction.shots.values()])
+    positions = np.array([shot.pose.get_origin()
+                         for shot in reconstruction.shots.values()])
     if len(positions) < 2:
         return DEFAULT_IMAGE_PLANE_DISTANCE
     try:
-        from scipy.spatial import KDTree
         tree = KDTree(positions)
         dists, _ = tree.query(positions, k=KNN_FOR_SCALE)
         median_nn_dist = np.median(dists[:, 1])
@@ -909,18 +1042,18 @@ def _compute_gcp_3d_errors(
     reference = reconstruction.reference
     for point in gcp:
         if point.id in triangulations and triangulations[point.id] is not None:
-             comp_pos = triangulations[point.id]
-             
-             if centering is not None:
-                 ref_pos = np.array(point.coordinates) + centering
-                 errors[point.id] = np.linalg.norm(comp_pos - ref_pos)
-             elif point.lla:
-                 ref_pos = reference.to_topocentric(*point.lla_vec)
-                 errors[point.id] = np.linalg.norm(comp_pos - ref_pos)
-             else:
-                 errors[point.id] = -1.0
+            comp_pos = triangulations[point.id]
+
+            if centering is not None:
+                ref_pos = np.array(point.coordinates) + centering
+                errors[point.id] = np.linalg.norm(comp_pos - ref_pos)
+            elif point.lla:
+                ref_pos = reference.to_topocentric(*point.lla_vec)
+                errors[point.id] = np.linalg.norm(comp_pos - ref_pos)
+            else:
+                errors[point.id] = -1.0
         else:
-             errors[point.id] = -1.0
+            errors[point.id] = -1.0
     return errors
 
 
@@ -931,21 +1064,22 @@ def _precompute_gcp_observations(
     triangulations: Dict[str, Optional[np.ndarray]]
 ) -> Dict[str, Dict[str, Any]]:
     """Precompute 2D GCP observations per shot."""
-    shot_obs = defaultdict(lambda: {"refs": [], "comps": [], "labels_refs": [], "labels_comps": []})
+    shot_obs = defaultdict(
+        lambda: {"refs": [], "comps": [], "labels_refs": [], "labels_comps": []})
     reference = reconstruction.reference
-    
+
     for point in gcp:
         if not point.lla:
             continue
-            
+
         triangulated = triangulations.get(point.id)
-        
+
         # Project to shots
         for obs in point.observations:
             shot_id = obs.shot_id
             if shot_id not in reconstruction.shots:
                 continue
-                
+
             shot = reconstruction.shots[shot_id]
             width = int(shot.camera.width)
             height = int(shot.camera.height)
@@ -955,7 +1089,7 @@ def _precompute_gcp_observations(
             # Reference pixel
             px = obs.projection[0] * normalizer + width / 2.0
             py = obs.projection[1] * normalizer + height / 2.0
-            
+
             shot_obs[shot_id]["refs"].append((px, py))
             shot_obs[shot_id]["labels_refs"].append(point.id)
 
@@ -966,7 +1100,7 @@ def _precompute_gcp_observations(
                 py_comp = projected[1] * normalizer + height / 2.0
                 shot_obs[shot_id]["comps"].append((px_comp, py_comp))
                 shot_obs[shot_id]["labels_comps"].append(point.id)
-                
+
     return shot_obs
 
 
@@ -981,7 +1115,7 @@ def _export_points(reconstruction: types.Reconstruction, drawer: Drawer) -> None
         if all(val <= 1.0 for val in c):
             c = [int(val * 255) for val in c]
         colors.append(c)
-    
+
     drawer.log_points(np.array(positions), np.array(colors, dtype=np.uint8))
     logger.info(f"Exported {len(positions)} automatic tie points")
 
@@ -991,7 +1125,7 @@ def _export_camera_path(reconstruction: types.Reconstruction, drawer: Drawer) ->
     for shot in reconstruction.shots.values():
         if shot.metadata and shot.metadata.capture_time.has_value:
             shots_with_time.append(shot)
-    
+
     if len(shots_with_time) < 2:
         return
 
@@ -1015,7 +1149,7 @@ def _export_gcp_3d(
     for point in gcp:
         pos = None
         if centering is not None:
-             pos = np.array(point.coordinates) + centering
+            pos = np.array(point.coordinates) + centering
         elif point.lla:
             pos = reference.to_topocentric(*point.lla_vec)
 
@@ -1037,18 +1171,19 @@ def _export_matchgraph(
     logger.info("Exporting match graph...")
     all_shots = list(reconstruction.shots.keys())
     all_points = list(reconstruction.points.keys())
-    connectivity = tracks_manager.get_all_pairs_connectivity(all_shots, all_points)
-    
+    connectivity = tracks_manager.get_all_pairs_connectivity(
+        all_shots, all_points)
+
     if not connectivity:
         return
 
     all_values = list(connectivity.values())
     if not all_values:
         return
-        
+
     lowest = np.percentile(all_values, 5)
     highest = np.percentile(all_values, 95)
-    
+
     lines = []
     colors = []
     min_inliers = data.config.get("resection_min_inliers", 15)
@@ -1058,13 +1193,14 @@ def _export_matchgraph(
             continue
         if node1 not in reconstruction.shots or node2 not in reconstruction.shots:
             continue
-            
+
         p1 = reconstruction.shots[node1].pose.get_origin()
         p2 = reconstruction.shots[node2].pose.get_origin()
-        
-        c_val = max(0.0, min(1.0, 1.0 - (float(edge) - lowest) / (highest - lowest + 1e-6)))
+
+        c_val = max(0.0, min(1.0, 1.0 - (float(edge) - lowest) /
+                    (highest - lowest + 1e-6)))
         rgba = MATCHGRAPH_CMAP(1.0 - c_val)
-        
+
         lines.append([p1, p2])
         colors.append([int(c * 255) for c in rgba[:3]])
 
@@ -1085,7 +1221,7 @@ def _export_coverage_map(
     points = np.array([p.coordinates for p in reconstruction.points.values()])
     if len(points) == 0:
         return
-    
+
     min_pt = np.percentile(points, 1, axis=0)
     max_pt = np.percentile(points, 99, axis=0)
     median_z = np.median(points[:, 2])
@@ -1093,25 +1229,26 @@ def _export_coverage_map(
     extent = max_pt - min_pt
     min_pt -= extent * COVERAGE_EXTENT_MARGIN
     max_pt += extent * COVERAGE_EXTENT_MARGIN
-    
+
     vertices = []
     for shot in reconstruction.shots.values():
         w = shot.camera.width
         h = shot.camera.height
-        
+
         m = COVERAGE_MARGIN
         steps = np.linspace(0, 1, COVERAGE_GRID_STEPS)
         steps = m + steps * (1 - 2 * m)
-        
+
         xs = w * steps
         ys = h * steps
-        pixels = features.normalized_image_coordinates(np.array([[x, y] for y in ys for x in xs]), w, h)
-        
+        pixels = features.normalized_image_coordinates(
+            np.array([[x, y] for y in ys for x in xs]), w, h)
+
         bearings = shot.camera.pixel_bearing_many(pixels)
         R_wc = shot.pose.get_rotation_matrix().T
         bearings_world = bearings @ R_wc.T
         origin = shot.pose.get_origin()
-        
+
         for direction in bearings_world:
             if abs(direction[2]) < 1e-6:
                 continue
@@ -1119,9 +1256,9 @@ def _export_coverage_map(
             if t <= 0:
                 continue
             p_ground = origin + t * direction
-            
+
             if (p_ground[0] >= min_pt[0] and p_ground[0] <= max_pt[0] and
-                p_ground[1] >= min_pt[1] and p_ground[1] <= max_pt[1]):
+                    p_ground[1] >= min_pt[1] and p_ground[1] <= max_pt[1]):
                 vertices.append(p_ground)
 
     if not vertices or len(vertices) < 3:
@@ -1130,34 +1267,93 @@ def _export_coverage_map(
     vertices = np.array(vertices)
     tri = Delaunay(vertices[:, :2])
     indices = tri.simplices
-    
+
     counts = np.zeros(len(vertices), dtype=int)
     for shot in reconstruction.shots.values():
         p_cam = shot.pose.transform_many(vertices)
         valid_z = p_cam[:, 2] > 0
         indices_valid_z = np.where(valid_z)[0]
-        
+
         if len(indices_valid_z) == 0:
             continue
-            
+
         p_cam_valid = p_cam[indices_valid_z]
         projections = shot.camera.project_many(p_cam_valid)
-        
+
         w = shot.camera.width
         h = shot.camera.height
         normalizer = max(w, h)
-        
+
         px = projections[:, 0] * normalizer + w / 2.0
         py = projections[:, 1] * normalizer + h / 2.0
-        
+
         in_view = (px >= 0) & (px < w) & (py >= 0) & (py < h)
         counts[indices_valid_z[in_view]] += 1
-    
+
     norm_counts = np.clip(counts, COVERAGE_MIN_COUNT, COVERAGE_MAX_COUNT)
-    norm_counts = (norm_counts - COVERAGE_MIN_COUNT) / (COVERAGE_MAX_COUNT - COVERAGE_MIN_COUNT)
-    
+    norm_counts = (norm_counts - COVERAGE_MIN_COUNT) / \
+        (COVERAGE_MAX_COUNT - COVERAGE_MIN_COUNT)
+
     colors = COVERAGE_CMAP(norm_counts)
     vertex_colors = (colors[:, :3] * 255).astype(np.uint8)
 
     drawer.log_coverage_map(vertices, vertex_colors, indices)
     logger.info(f"Exported coverage map with {len(vertices)} vertices")
+
+
+def _sanitize_entity_path_component(value: str, strip_spaces: bool = True) -> str:
+    # Rerun entity paths use "/" as hierarchy separator.
+    sanitized = value.replace("/", "_")
+    if strip_spaces:
+        sanitized = sanitized.replace(" ", "_")
+    return sanitized
+
+
+def _try_load_image_as_numpy(data: DataSet, path: str) -> Optional[np.ndarray]:
+    if not data.io_handler.isfile(path):
+        return None
+    try:
+        with data.io_handler.open_rb(path) as f:
+            raw = f.read()
+        img = PILImage.open(BytesIO(raw))
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        return np.array(img)
+    except Exception as e:
+        logger.warning(f"Failed to load image {path}: {e}")
+        return None
+
+
+def _log_dataframe(path: str, columns: Dict[str, Sequence[Any]], *, static: bool = True) -> None:
+    """
+    Log a dataframe in the way expected by `DataframeView` (Selection View).
+
+    Columns must be equal-length sequences (pad with None if needed).
+    """
+    if not columns:
+        return
+
+    cols: Dict[str, List[Any]] = {k: list(v) for k, v in columns.items()}
+    max_len = max((len(v) for v in cols.values()), default=0)
+    for k, v in cols.items():
+        if len(v) < max_len:
+            v.extend([None] * (max_len - len(v)))
+
+    # Convert dict to a Markdown Table string
+    header = "| " + " | ".join(cols.keys()) + " |"
+    separator = "| " + \
+        " | ".join([":---"] + ["---:"] * (len(cols) - 1)) + " |"
+    body = []
+    for i in range(max_len):
+        cells = []
+        for v in cols.values():
+            val = v[i]
+            if isinstance(val, (float, np.floating)):
+                cells.append(f"{val:.2f}")
+            else:
+                cells.append(str(val) if val is not None else "")
+        body.append("| " + " | ".join(cells) + " |")
+    md_table = "\n".join([header, separator] + body)
+
+    rr.log(path, rr.TextDocument(
+        md_table, media_type="text/markdown"), static=True)
