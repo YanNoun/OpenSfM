@@ -9,11 +9,12 @@ from typing import Any, BinaryIO, Callable, Dict, List, Optional, Tuple, Union
 import exifread
 import numpy as np
 import xmltodict as x2d
-from opensfm import pygeometry
+from opensfm import geometry, pygeometry
 
 from opensfm.dataset_base import DataSetBase
 from opensfm.geo import ecef_from_lla
 from opensfm.sensors import camera_calibration, sensor_data
+from opensfm.geo import TopocentricConverter
 
 logger: logging.Logger = logging.getLogger(__name__)
 inch_in_mm: float = 25.4
@@ -96,7 +97,8 @@ def compute_focal(
     sensor_string: Optional[str],
 ) -> Tuple[float, float]:
     if focal_35 is not None and focal_35 > 0:
-        focal_ratio = focal35_to_focal_ratio(focal_35, pixel_width, pixel_height)
+        focal_ratio = focal35_to_focal_ratio(
+            focal_35, pixel_width, pixel_height)
     else:
         if not sensor_width:
             sensor_width = (
@@ -181,7 +183,7 @@ def get_xmp(fileobj: BinaryIO) -> List[Dict[str, Any]]:
     xmp_end = img_str.find("</x:xmpmeta")
 
     if xmp_start < xmp_end:
-        xmp_str = img_str[xmp_start : xmp_end + 12]
+        xmp_str = img_str[xmp_start: xmp_end + 12]
         xdict = parse_xmp_string(xmp_str)
         if xdict is None:
             return []
@@ -212,10 +214,12 @@ class EXIF:
         use_exif_size: bool = True,
         name: Optional[str] = None,
     ) -> None:
-        self.image_size_loader: Callable[[], Tuple[int, int]] = image_size_loader
+        self.image_size_loader: Callable[[],
+                                         Tuple[int, int]] = image_size_loader
         self.use_exif_size: bool = use_exif_size
         self.fileobj: BinaryIO = fileobj
-        self.tags: Dict[str, Any] = exifread.process_file(fileobj, details=False)
+        self.tags: Dict[str, Any] = exifread.process_file(
+            fileobj, details=False)
         fileobj.seek(0)
         self.xmp: List[Dict[str, Any]] = get_xmp(fileobj)
         self.fileobj_name: str = self.fileobj.name if name is None else name
@@ -301,11 +305,13 @@ class EXIF:
         mm_per_unit = self.get_mm_per_unit(resolution_unit)
         if not mm_per_unit:
             return None
-        pixels_per_unit = get_tag_as_float(self.tags, "EXIF FocalPlaneXResolution")
+        pixels_per_unit = get_tag_as_float(
+            self.tags, "EXIF FocalPlaneXResolution")
         if pixels_per_unit is None:
             return None
         if pixels_per_unit <= 0.0:
-            pixels_per_unit = get_tag_as_float(self.tags, "EXIF FocalPlaneYResolution")
+            pixels_per_unit = get_tag_as_float(
+                self.tags, "EXIF FocalPlaneYResolution")
             if pixels_per_unit is None or pixels_per_unit <= 0.0:
                 return None
         units_per_pixel = 1 / pixels_per_unit
@@ -332,7 +338,8 @@ class EXIF:
             return um_in_mm
         else:
             logger.warning(
-                "Unknown EXIF resolution unit value: {}".format(resolution_unit)
+                "Unknown EXIF resolution unit value: {}".format(
+                    resolution_unit)
             )
             return None
 
@@ -513,12 +520,21 @@ class EXIF:
                     )
                 return (d - datetime.datetime(1970, 1, 1)).total_seconds()
         logger.info(
-            'Image file "{0:s}" has no valid time stamp'.format(self.fileobj_name)
+            'Image file "{0:s}" has no valid time stamp'.format(
+                self.fileobj_name)
         )
         return 0.0
 
     def extract_opk(self, geo: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         opk = None
+
+        # Can't convert from YPR to OPK without geo location
+        if "latitude" not in geo and "longitude" not in geo and "altitude" not in geo:
+            return opk
+
+        tc = TopocentricConverter(
+            geo["latitude"], geo["longitude"], geo["altitude"]
+        )
 
         if self.has_xmp() and geo and "latitude" in geo and "longitude" in geo:
             ypr = np.array([None, None, None])
@@ -532,31 +548,41 @@ class EXIF:
                 # Pitch: 90 --> camera is looking forward
                 # Roll: 0 (assuming gimbal)
 
-                if (
-                    "@Camera:Yaw" in self.xmp[0]
-                    and "@Camera:Pitch" in self.xmp[0]
-                    and "@Camera:Roll" in self.xmp[0]
-                ):
-                    ypr = np.array(
-                        [
-                            float(self.xmp[0]["@Camera:Yaw"]),
-                            float(self.xmp[0]["@Camera:Pitch"]),
-                            float(self.xmp[0]["@Camera:Roll"]),
-                        ]
-                    )
-                elif (
-                    "@drone-dji:GimbalYawDegree" in self.xmp[0]
-                    and "@drone-dji:GimbalPitchDegree" in self.xmp[0]
-                    and "@drone-dji:GimbalRollDegree" in self.xmp[0]
-                ):
-                    ypr = np.array(
-                        [
-                            float(self.xmp[0]["@drone-dji:GimbalYawDegree"]),
-                            float(self.xmp[0]["@drone-dji:GimbalPitchDegree"]),
-                            float(self.xmp[0]["@drone-dji:GimbalRollDegree"]),
-                        ]
-                    )
-                    ypr[1] += 90  # DJI's values need to be offset
+                # Prioritize Gimbal, then Flight, then Camera
+                tag_sets = [
+                    (
+                        "@drone-dji:GimbalYawDegree",
+                        "@drone-dji:GimbalPitchDegree",
+                        "@drone-dji:GimbalRollDegree",
+                        True,
+                    ),
+                    (
+                        "@drone-dji:FlightYawDegree",
+                        "@drone-dji:FlightPitchDegree",
+                        "@drone-dji:FlightRollDegree",
+                        True,
+                    ),
+                    ("@Camera:Yaw", "@Camera:Pitch", "@Camera:Roll", False),
+                ]
+
+                for yaw_key, pitch_key, roll_key, offset_pitch in tag_sets:
+                    if (
+                        yaw_key in self.xmp[0]
+                        and pitch_key in self.xmp[0]
+                        and roll_key in self.xmp[0]
+                    ):
+                        ypr = np.array(
+                            [
+                                float(self.xmp[0][yaw_key]),
+                                float(self.xmp[0][pitch_key]),
+                                float(self.xmp[0][roll_key]),
+                            ]
+                        )
+                        if offset_pitch:
+                            ypr[1] += 90
+
+                        break
+
             except ValueError:
                 logger.debug(
                     'Invalid yaw/pitch/roll tag in image file "{0:s}"'.format(
@@ -579,17 +605,27 @@ class EXIF:
                     [
                         [
                             np.cos(y) * np.cos(p),
-                            np.cos(y) * np.sin(p) * np.sin(r) - np.sin(y) * np.cos(r),
-                            np.cos(y) * np.sin(p) * np.cos(r) + np.sin(y) * np.sin(r),
+                            np.cos(y) * np.sin(p) * np.sin(r) -
+                            np.sin(y) * np.cos(r),
+                            np.cos(y) * np.sin(p) * np.cos(r) +
+                            np.sin(y) * np.sin(r),
                         ],
                         [
                             np.sin(y) * np.cos(p),
-                            np.sin(y) * np.sin(p) * np.sin(r) + np.cos(y) * np.cos(r),
-                            np.sin(y) * np.sin(p) * np.cos(r) - np.cos(y) * np.sin(r),
+                            np.sin(y) * np.sin(p) * np.sin(r) +
+                            np.cos(y) * np.cos(r),
+                            np.sin(y) * np.sin(p) * np.cos(r) -
+                            np.cos(y) * np.sin(r),
                         ],
-                        [-np.sin(p), np.cos(p) * np.sin(r), np.cos(p) * np.cos(r)],
+                        [-np.sin(p), np.cos(p) * np.sin(r),
+                         np.cos(p) * np.cos(r)],
                     ]
                 )
+
+                # Flip X and Z for 180 degree roll
+                if math.isclose(abs(ypr[2]), math.pi, abs_tol=1e-3):
+                    cnb[:, 0] *= -1
+                    cnb[:, 2] *= -1
 
                 # Convert between image and body coordinates
                 # Top of image pixels point to flying direction
@@ -600,17 +636,16 @@ class EXIF:
                 # (Swap X/Y, flip Z)
                 cbb = np.array([[0, 1, 0], [1, 0, 0], [0, 0, -1]])
 
-                delta = 1e-7
-
+                delta = 1e-10
                 p1 = np.array(
-                    ecef_from_lla(
+                    tc.to_topocentric(
                         geo["latitude"] + delta,
                         geo["longitude"],
                         geo.get("altitude", 0),
                     )
                 )
                 p2 = np.array(
-                    ecef_from_lla(
+                    tc.to_topocentric(
                         geo["latitude"] - delta,
                         geo["longitude"],
                         geo.get("altitude", 0),
@@ -628,7 +663,6 @@ class EXIF:
 
                 znp = np.array([0, 0, -1]).T
                 ynp = np.cross(znp, xnp)
-
                 cen = np.array([xnp, ynp, znp]).T
 
                 # OPK rotation matrix
@@ -807,7 +841,8 @@ def camera_from_exif_metadata(
             calib["focal_x"],
             calib["focal_y"] / calib["focal_x"],
             np.array([calib["c_x"], calib["c_y"]]),
-            np.array([calib["k1"], calib["k2"], calib["k3"], calib["p1"], calib["p2"]]),
+            np.array([calib["k1"], calib["k2"], calib["k3"],
+                     calib["p1"], calib["p2"]]),
         )
     elif calib_pt == "fisheye":
         camera = pygeometry.Camera.create_fisheye(
