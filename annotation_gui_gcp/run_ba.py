@@ -43,7 +43,8 @@ def merge_reconstructions(reconstructions, tracks_manager):
             merged.add_camera(camera)
 
         for point in reconstruction.points.values():
-            new_point = merged.create_point(f"R{ix_r}_{point.id}", point.coordinates)
+            new_point = merged.create_point(
+                f"R{ix_r}_{point.id}", point.coordinates)
             new_point.color = point.color
 
         for shot in reconstruction.shots.values():
@@ -51,7 +52,8 @@ def merge_reconstructions(reconstructions, tracks_manager):
             try:
                 obsdict = tracks_manager.get_shot_observations(shot.id)
             except RuntimeError:
-                logger.warning(f"Shot id {shot.id} missing from tracks_manager!")
+                logger.warning(
+                    f"Shot id {shot.id} missing from tracks_manager!")
                 continue
             for track_id, obs in obsdict.items():
                 merged_track_id = f"R{ix_r}_{track_id}"
@@ -94,7 +96,8 @@ def gcp_geopositional_error(
     coords_reconstruction = triangulate_gcps(gcps, reconstruction)
     out = {}
     for ix, gcp in enumerate(gcps):
-        expected = reconstruction.reference.to_lla(*gcp.lla_vec) if gcp.lla else None
+        expected = reconstruction.reference.to_lla(
+            *gcp.lla_vec) if gcp.lla else None
         triangulated = (
             coords_reconstruction[ix] if coords_reconstruction[ix] is not None else None
         )
@@ -113,7 +116,8 @@ def gcp_geopositional_error(
             lat, lon, _alt = out[gcp.id]["expected_lla"]
             expected_xy = reconstruction.reference.to_topocentric(lat, lon, 0)
             lat, lon, _alt = out[gcp.id]["triangulated_lla"]
-            triangulated_xy = reconstruction.reference.to_topocentric(lat, lon, 0)
+            triangulated_xy = reconstruction.reference.to_topocentric(
+                lat, lon, 0)
             out[gcp.id]["error_planar"] = np.linalg.norm(
                 np.array(expected_xy) - np.array(triangulated_xy)
             )
@@ -154,11 +158,13 @@ def reproject_gcps(
         output[gcp.id] = {}
         n_obs = len(gcp.observations)
         if point is None:
-            logger.info(f"Could not triangulate {gcp.id} with {n_obs} annotations")
+            logger.info(
+                f"Could not triangulate {gcp.id} with {n_obs} annotations")
             continue
         for observation in gcp.observations:
             lat, lon, alt = reconstruction.reference.to_lla(*point)
-            output[gcp.id][observation.shot_id] = {"lla": [lat, lon, alt], "error": 0}
+            output[gcp.id][observation.shot_id] = {
+                "lla": [lat, lon, alt], "error": 0}
             if observation.shot_id not in reconstruction.shots:
                 continue
             shot = reconstruction.shots[observation.shot_id]
@@ -195,7 +201,8 @@ def compute_gcp_std(gcp_errors):
     all_errors = []
     for gcp_id in gcp_errors:
         errors = [e["error"] for e in gcp_errors[gcp_id].values()]
-        logger.info(f"gcp {gcp_id} mean reprojection error = {np.mean(errors)}")
+        logger.info(
+            f"gcp {gcp_id} mean reprojection error = {np.mean(errors)}")
         all_errors.extend(errors)
 
     all_errors = [e for e in all_errors if not np.isnan(e)]
@@ -248,7 +255,8 @@ def add_gcp_to_bundle(
                 coordinates = np.array(enu)
             else:
                 logger.warning(
-                    "Cannot initialize GCP '{}'." "  Ignoring it".format(point.id)
+                    "Cannot initialize GCP '{}'." "  Ignoring it".format(
+                        point.id)
                 )
                 continue
 
@@ -292,9 +300,11 @@ def bundle_with_fixed_images(
         shot = reconstruction.get_shot(shot_id)
         for point in shot.get_valid_landmarks():
             obs = shot.get_landmark_observation(point)
-            ba.add_point_projection_observation(shot.id, point.id, obs.point, obs.scale)
+            ba.add_point_projection_observation(
+                shot.id, point.id, obs.point, obs.scale)
 
-    add_gcp_to_bundle(ba, reconstruction.reference, gcp, gcp_std, reconstruction.shots)
+    add_gcp_to_bundle(ba, reconstruction.reference, gcp,
+                      gcp_std, reconstruction.shots)
 
     ba.set_point_projection_loss_function(
         config["loss_function"], config["loss_function_threshold"]
@@ -438,7 +448,8 @@ def resect_image(im, camera, gcps, reconstruction, data, dst_reconstruction=None
         R = T[:, :3].T
         t = -R.dot(T[:, 3])
         dst_reconstruction.add_camera(camera)
-        shot = dst_reconstruction.create_shot(im, camera.id, pygeometry.Pose(R, t))
+        shot = dst_reconstruction.create_shot(
+            im, camera.id, pygeometry.Pose(R, t))
         shot.metadata = helpers.get_image_metadata(data, im)
         return shot
     else:
@@ -505,7 +516,8 @@ def align_3d_annotations_to_reconstruction(
     model_id,
     reconstruction,
 ):
-    coords_triangulated_gcps = triangulate_gcps(gcps_this_model, reconstruction)
+    coords_triangulated_gcps = triangulate_gcps(
+        gcps_this_model, reconstruction)
     n_triangulated = sum(x is not None for x in coords_triangulated_gcps)
     if n_triangulated < 3:
         logger.info(f"{model_id} has {n_triangulated} gcps, not aligning")
@@ -522,7 +534,8 @@ def align_3d_annotations_to_reconstruction(
     # Move / "reproject" the triangulated GCPs to the reference frame of the CAD model for display/interaction
     gcp_reprojections = {}
     try:
-        s, A, b = find_alignment(coords_triangulated_gcps, coords_annotated_gcps)
+        s, A, b = find_alignment(
+            coords_triangulated_gcps, coords_annotated_gcps)
         for gcp, coords in zip(gcps_this_model, coords_triangulated_gcps):
             gcp_reprojections[gcp.id] = (
                 (s * A.dot(coords) + b).tolist() if coords is not None else None
@@ -634,24 +647,29 @@ def align(
                 reconstructions = data.load_reconstruction(fn_resplit)
             else:
                 reconstructions = data.load_reconstruction()
-                reconstructions = [reconstructions[rec_a], reconstructions[rec_b]]
+                reconstructions = [
+                    reconstructions[rec_a], reconstructions[rec_b]]
             coords0 = triangulate_gcps(gcps, reconstructions[0])
             coords1 = triangulate_gcps(gcps, reconstructions[1])
             n_valid_0 = sum(c is not None for c in coords0)
-            logger.debug(f"Triangulated {n_valid_0}/{len(gcps)} gcps for rec #{rec_a}")
+            logger.debug(
+                f"Triangulated {n_valid_0}/{len(gcps)} gcps for rec #{rec_a}")
             n_valid_1 = sum(c is not None for c in coords1)
-            logger.debug(f"Triangulated {n_valid_1}/{len(gcps)} gcps for rec #{rec_b}")
+            logger.debug(
+                f"Triangulated {n_valid_1}/{len(gcps)} gcps for rec #{rec_b}")
             try:
                 s, A, b = find_alignment(coords1, coords0)
                 apply_similarity(reconstructions[1], s, A, b)
             except ValueError:
-                logger.warning(f"Could not rigidly align rec #{rec_b} to rec #{rec_a}")
+                logger.warning(
+                    f"Could not rigidly align rec #{rec_b} to rec #{rec_a}")
                 return
             logger.info(f"Rigidly aligned rec #{rec_b} to rec #{rec_a}")
         else:  # Image - to - reconstruction annotation
             reconstructions = data.load_reconstruction()
             base = reconstructions[rec_a]
-            resected = resect_annotated_single_images(base, gcps, camera_models, data)
+            resected = resect_annotated_single_images(
+                base, gcps, camera_models, data)
             reconstructions = [base, resected]
     else:
         logger.debug(
@@ -663,7 +681,8 @@ def align(
         return
 
     logger.debug(f"Aligning annotations, if any, to rec #{rec_a}")
-    align_external_3d_models_to_reconstruction(data, gcps, reconstructions[0], rec_a)
+    align_external_3d_models_to_reconstruction(
+        data, gcps, reconstructions[0], rec_a)
 
     # Set the GPS constraint of the moved/resected shots to the manually-aligned position
     for shot in reconstructions[1].shots.values():
@@ -698,7 +717,8 @@ def align(
 
         logger.info("Running BA on merged reconstructions")
         # orec.align_reconstruction(merged, None, data.config)
-        orec.bundle(merged, camera_models, {}, gcp=gcps, config=data.config)
+        orec.bundle(merged, camera_models, {}, gcp=gcps,
+                    grid_size=0, config=data.config)
         data.save_reconstruction(
             [merged], f"reconstruction_gcp_ba_{rec_a}x{rec_b}.json"
         )
@@ -727,7 +747,8 @@ def align(
     with open(f"{data.data_path}/gcp_reprojections_{rec_a}x{rec_b}.json", "w") as f:
         json.dump(gcp_reprojections, f, indent=4, sort_keys=True)
 
-    n_bad_gcp_annotations = int(sum(t[2] > px_threshold for t in reprojection_errors))
+    n_bad_gcp_annotations = int(
+        sum(t[2] > px_threshold for t in reprojection_errors))
     if n_bad_gcp_annotations > 0:
         logger.info(f"{n_bad_gcp_annotations} large reprojection errors:")
         for t in reprojection_errors:
@@ -751,7 +772,7 @@ def align(
         data.config["triangulation_min_ray_angle"] = backup
         logger.info(
             f"Re-triangulated. Removed {n_points - len(merged.points)}."
-            f" Kept {int(100*len(merged.points)/n_points)}%"
+            f" Kept {int(100 * len(merged.points) / n_points)}%"
         )
         data.save_reconstruction(
             [merged],
@@ -763,7 +784,8 @@ def align(
         # If we have two reconstructions, we do this twice, fixing each one.
         _rec_ixs = [(0, 1), (1, 0)] if rec_b is not None else [(0, 1)]
         for rec_ixs in _rec_ixs:
-            logger.info(f"Running BA with fixed images. Fixing rec #{rec_ixs[0]}")
+            logger.info(
+                f"Running BA with fixed images. Fixing rec #{rec_ixs[0]}")
             fixed_images = set(reconstructions[rec_ixs[0]].shots.keys())
             covariance_estimation_valid = bundle_with_fixed_images(
                 merged,
@@ -787,7 +809,8 @@ def align(
                 shots_std_this_pair = []
                 for shot in merged.shots.values():
                     if shot.id in reconstructions[rec_ixs[1]].shots:
-                        u, std_v = decompose_covariance(shot.covariance[3:, 3:])
+                        u, std_v = decompose_covariance(
+                            shot.covariance[3:, 3:])
                         std = np.linalg.norm(std_v)
                         shots_std_this_pair.append((shot.id, std))
                         logger.debug(f"{shot.id} std: {std}")
@@ -851,7 +874,8 @@ def align(
         )
     if n_bad_std != 0 or n_bad_gcp_annotations != 0:
         if rigid:
-            logger.info("Positional uncertainty was not calculated. (--rigid was set).")
+            logger.info(
+                "Positional uncertainty was not calculated. (--rigid was set).")
         elif not covariance:
             logger.info(
                 "Positional uncertainty was not calculated (--covariance not set)."
@@ -873,12 +897,13 @@ def align(
                 gcp_reprojections, px_threshold
             )
             gcps_sorted = sorted(
-                stats_bad_reprojections, key=lambda k: -stats_bad_reprojections[k]
+                stats_bad_reprojections, key=lambda k: -
+                stats_bad_reprojections[k]
             )
             for ix, gcp_id in enumerate(gcps_sorted[:5]):
                 n = stats_bad_reprojections[gcp_id]
                 if n > 0:
-                    logger.info(f"#{ix+1} - {gcp_id}: {n} bad annotations")
+                    logger.info(f"#{ix + 1} - {gcp_id}: {n} bad annotations")
         else:
             logger.info("No annotations with large reprojection errors")
 
