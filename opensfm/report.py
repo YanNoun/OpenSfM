@@ -115,7 +115,8 @@ class Report:
 
     def _make_centered_image(self, image_path: str, desired_height: float) -> None:
         with tempfile.TemporaryDirectory() as tmp_local_dir:
-            local_image_path = os.path.join(tmp_local_dir, os.path.basename(image_path))
+            local_image_path = os.path.join(
+                tmp_local_dir, os.path.basename(image_path))
             with self.io_handler.open_wb(local_image_path) as fwb:
                 with self.io_handler.open_rb(image_path) as f:
                     fwb.write(f.read())
@@ -152,7 +153,8 @@ class Report:
             ).communicate()
             version = out.strip().decode()
         except BaseException as e:
-            logger.warning(f"Exception thrwon while extracting 'git' version, {e}")
+            logger.warning(
+                f"Exception thrwon while extracting 'git' version, {e}")
             version = ""
 
         # indicate we don't know the version
@@ -173,7 +175,7 @@ class Report:
             ["Date", self.stats["processing_statistics"]["date"]],
             [
                 "Area Covered",
-                f"{self.stats['processing_statistics']['area']/1e6:.6f} km²",
+                f"{self.stats['processing_statistics']['area'] / 1e6:.6f} km²",
             ],
             [
                 "Processing Time",
@@ -215,7 +217,7 @@ class Report:
             ],
             [
                 "Reconstructed Points",
-                f"{rec_points} over {init_points} points ({rec_points/init_points*100:.1f}%)",
+                f"{rec_points} over {init_points} points ({rec_points / init_points * 100:.1f}%)",
             ],
             [
                 "Reconstructed Components",
@@ -235,9 +237,11 @@ class Report:
         row_gps_gcp = [" / ".join(geo_string) + " errors"]
         geo_errors = []
         if self.stats["reconstruction_statistics"]["has_gps"]:
-            geo_errors.append(f"{self.stats['gps_errors']['average_error']:.2f}")
+            geo_errors.append(
+                f"{self.stats['gps_errors']['average_error']:.2f}")
         if self._has_meaningful_gcp():
-            geo_errors.append(f"{self.stats['gcp_errors']['average_error']:.2f}")
+            geo_errors.append(
+                f"{self.stats['gcp_errors']['average_error']:.2f}")
         row_gps_gcp.append(" / ".join(geo_errors) + " meters")
         rows.append(row_gps_gcp)
 
@@ -257,7 +261,8 @@ class Report:
     def make_processing_time_details(self) -> None:
         self._make_section("Processing Time Details")
 
-        columns_names = list(self.stats["processing_statistics"]["steps_times"].keys())
+        columns_names = list(
+            self.stats["processing_statistics"]["steps_times"].keys())
         formatted_floats = []
         for v in self.stats["processing_statistics"]["steps_times"].values():
             formatted_floats.append(f"{v:.2f} sec.")
@@ -276,9 +281,12 @@ class Report:
                 continue
             for comp in ["x", "y", "z"]:
                 row = [comp.upper() + " Error (meters)"]
-                row.append(f"{self.stats[error_type + '_errors']['mean'][comp]:.3f}")
-                row.append(f"{self.stats[error_type +'_errors']['std'][comp]:.3f}")
-                row.append(f"{self.stats[error_type +'_errors']['error'][comp]:.3f}")
+                row.append(
+                    f"{self.stats[error_type + '_errors']['mean'][comp]:.3f}")
+                row.append(
+                    f"{self.stats[error_type + '_errors']['std'][comp]:.3f}")
+                row.append(
+                    f"{self.stats[error_type + '_errors']['error'][comp]:.3f}")
                 rows.append(row)
 
             rows.append(
@@ -286,7 +294,7 @@ class Report:
                     "Total",
                     "",
                     "",
-                    f"{self.stats[error_type +'_errors']['average_error']:.3f}",
+                    f"{self.stats[error_type + '_errors']['average_error']:.3f}",
                 ]
             )
             self._make_table(columns_names, rows)
@@ -310,8 +318,41 @@ class Report:
                     f"{R[0]:.2f}      {R[1]:.2f}      {R[2]:.2f}",
                 ]
             )
-        self._make_table(columns_names, rows)
+        if rows:
+            self._make_table(columns_names, rows)
 
+        self.pdf.set_xy(self.margin, self.pdf.get_y() + self.margin / 2)
+
+    def make_orientation_details(self) -> None:
+        if "opk_errors" not in self.stats:
+            return
+        if "average_error" not in self.stats["opk_errors"]:
+            return
+
+        self._make_section("Orientation Error Details")
+        columns_names = ["Component", "Mean", "Sigma", "RMS Error"]
+        error_name = "opk_errors"
+
+        rows = []
+        for comp in ["omega", "phi", "kappa"]:
+            row = [comp.capitalize() + " Error (degrees)"]
+            row.append(
+                f"{self.stats[error_name]['mean'][comp]:.3f}")
+            row.append(
+                f"{self.stats[error_name]['std'][comp]:.3f}")
+            row.append(
+                f"{self.stats[error_name]['error'][comp]:.3f}")
+            rows.append(row)
+
+        rows.append(
+            [
+                "Total",
+                "",
+                "",
+                f"{self.stats[error_name]['average_error']:.3f}",
+            ]
+        )
+        self._make_table(columns_names, rows)
         self.pdf.set_xy(self.margin, self.pdf.get_y() + self.margin / 2)
 
     def make_features_details(self) -> None:
@@ -394,7 +435,8 @@ class Report:
 
             rows = []
             rows.append(["Initial"] + [f"{x:.4f}" for x in initial.values()])
-            rows.append(["Optimized"] + [f"{x:.4f}" for x in optimized.values()])
+            rows.append(["Optimized"] +
+                        [f"{x:.4f}" for x in optimized.values()])
 
             self._make_subsection(camera)
             self._make_table(names, rows)
@@ -402,7 +444,8 @@ class Report:
 
             residual_grid_height = 100
             self._make_centered_image(
-                os.path.join(self.output_path, residual_grids[0]), residual_grid_height
+                os.path.join(self.output_path,
+                             residual_grids[0]), residual_grid_height
             )
 
     def make_rig_cameras_details(self) -> None:
@@ -499,4 +542,5 @@ class Report:
         self.add_page_break()
 
         self.make_gps_details()
+        self.make_orientation_details()
         self.make_processing_time_details()
