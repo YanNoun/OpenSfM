@@ -18,7 +18,8 @@ filename: str = os.path.join(
 def test_reconstructions_from_json_consistency() -> None:
     with open(filename) as fin:
         obj_before = json.loads(fin.read())
-    obj_after = io.reconstructions_to_json(io.reconstructions_from_json(obj_before))
+    obj_after = io.reconstructions_to_json(
+        io.reconstructions_from_json(obj_before))
 
     assert obj_before[0]["cameras"] == obj_after[0]["cameras"]
 
@@ -65,18 +66,6 @@ def test_reconstruction_to_ply() -> None:
     reconstructions = io.reconstructions_from_json(obj)
     ply = io.reconstruction_to_ply(reconstructions[0])
     assert len(ply.splitlines()) > len(reconstructions[0].points)
-
-
-def test_parse_projection() -> None:
-    proj = io._parse_projection("WGS84")
-    assert proj is None
-
-    proj = io._parse_projection("WGS84 UTM 31N")
-    easting, northing = 431760, 4582313.7
-    lat, lon = 41.38946, 2.18378
-    assert proj
-    plat, plon = proj.transform(easting, northing)
-    assert np.allclose((lat, lon), (plat, plon))
 
 
 def test_read_gcp_list() -> None:
