@@ -155,6 +155,8 @@ def test_json_to_and_from_metadata() -> None:
         "skey": "test",
         "gravity_down": [7, 8, 9],
         "compass": {"angle": 10, "accuracy": 45},
+        "opk_angles": [1.0, 2.0, 3.0],
+        "opk_accuracy": 0.1,
     }
     m = io.json_to_pymap_metadata(obj)
     assert m.orientation.value == 10
@@ -165,6 +167,8 @@ def test_json_to_and_from_metadata() -> None:
     assert np.allclose(m.gravity_down.value, [7, 8, 9])
     assert m.compass_angle.value == 10
     assert m.compass_accuracy.value == 45
+    assert np.allclose(m.opk_angles.value, [1.0, 2.0, 3.0])
+    assert m.opk_accuracy.value == 0.1
     assert obj == io.pymap_metadata_to_json(m)
 
 

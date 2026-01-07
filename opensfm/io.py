@@ -553,6 +553,10 @@ def pymap_metadata_to_json(metadata: pymap.ShotMeasurements) -> Dict[str, Any]:
             obj["compass"] = {"accuracy": metadata.compass_accuracy.value}
     if metadata.sequence_key.has_value:
         obj["skey"] = metadata.sequence_key.value
+    if metadata.opk_angles.has_value:
+        obj["opk_angles"] = list(metadata.opk_angles.value)
+    if metadata.opk_accuracy.has_value:
+        obj["opk_accuracy"] = metadata.opk_accuracy.value
     return obj
 
 
@@ -576,6 +580,10 @@ def json_to_pymap_metadata(obj: Dict[str, Any]) -> pymap.ShotMeasurements:
             metadata.compass_angle.value = compass["angle"]
         if "accuracy" in compass:
             metadata.compass_accuracy.value = compass["accuracy"]
+    if obj.get("opk_angles") is not None:
+        metadata.opk_angles.value = obj.get("opk_angles")
+    if obj.get("opk_accuracy") is not None:
+        metadata.opk_accuracy.value = obj.get("opk_accuracy")
     return metadata
 
 
