@@ -44,3 +44,18 @@ def test_ecef_lla_topocentric_consistency_pygeo() -> None:
 def test_eq_geo() -> None:
     assert geo.TopocentricConverter(40, 30, 0) == geo.TopocentricConverter(40, 30, 0)
     assert geo.TopocentricConverter(40, 32, 0) != geo.TopocentricConverter(40, 30, 0)
+
+
+def test_parse_projection() -> None:
+    from opensfm import io
+    proj_str = io._parse_projection_string("WGS84")
+    assert proj_str is None
+
+    proj_str = io._parse_projection_string("WGS84 UTM 31N")
+    assert proj_str is not None
+
+    proj = geo.construct_proj_transformer(proj_str)
+    easting, northing = 431760, 4582313.7
+    lat, lon = 41.38946, 2.18378
+    plat, plon = proj.transform(easting, northing)
+    assert np.allclose((lat, lon), (plat, plon))
