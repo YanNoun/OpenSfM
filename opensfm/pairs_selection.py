@@ -39,14 +39,15 @@ def get_gps_point(
     altitude = 0
     direction = np.array([0, 0, 1])
     return (
-        np.array(reference.to_topocentric(gps["latitude"], gps["longitude"], altitude)),
+        np.array(reference.to_topocentric(
+            gps["latitude"], gps["longitude"], altitude)),
         direction,
     )
 
 
 DEFAULT_Z = 1.0
 MAXIMUM_Z = 8000
-SAMPLE_Z = 100
+SAMPLE_Z = 25
 
 
 def sign(x: float) -> float:
@@ -85,23 +86,42 @@ def find_best_altitude(
     directions_base = np.array([p for p in directions.values()])
     origin_base = np.array([p for p in origin.values()])
 
-    samples_x, samples_y = [], []
-    for current_z in range(1, MAXIMUM_Z, SAMPLE_Z):
+    samples = []
+    for i, current_z in enumerate(range(1, MAXIMUM_Z, SAMPLE_Z)):
         scaled = origin_base + directions_base / DEFAULT_Z * current_z
         current_size = (np.max(scaled[:, 0]) - np.min(scaled[:, 0])) ** 2 + (
             np.max(scaled[:, 1]) - np.min(scaled[:, 1])
         ) ** 2
-        samples_x.append(current_z)
-        samples_y.append(current_size)
+        samples.append((current_z, current_size, i))
 
-    coeffs = np.polyfit(samples_x, samples_y, 2)
-    extrema = -coeffs[1] / (2 * coeffs[0])
-    if extrema < 0:
+    # Find the minima manually
+    min_z, min_size, index = min(samples, key=lambda t: t[1])
+    logger.info(
+        f"Minimum found at sampling altitude {min_z} with size {min_size}")
+
+    if index == 0 or index == len(samples) - 1:
         logger.info(
-            f"Altitude is negative ({extrema}) : viewing directions are probably divergent. Using default altitude of {DEFAULT_Z}"
+            f"Altitude extrema is at the boundary of search space. Using default altitude of {DEFAULT_Z}"
         )
-        extrema = DEFAULT_Z
-    return extrema
+        return DEFAULT_Z
+
+    # Refine with polynomial fitting
+    before = max(0, index - 1)
+    after = min(len(samples) - 1, index + 1)
+    coeffs = np.polyfit(
+        [samples[i][0] for i in range(before, after + 1)],
+        [samples[i][1] for i in range(before, after + 1)],
+        2,
+    )
+    real_minimum = -coeffs[1] / (2 * coeffs[0])
+    logger.info(f"Refined altitude extrema at {real_minimum}")
+
+    if real_minimum < 0:
+        logger.info(
+            f"Altitude is negative ({real_minimum}) : viewing directions are probably divergent. Using default altitude of {DEFAULT_Z}"
+        )
+        real_minimum = DEFAULT_Z
+    return real_minimum
 
 
 def get_representative_points(
@@ -137,12 +157,14 @@ def get_representative_points(
             raise RuntimeError(
                 f"GPS / OPK / YPR {has_gps, has_opk, has_ypr} tag combination unsupported"
             )
-        origin[image], directions[image] = map_method[method_id](exif, reference)
+        origin[image], directions[image] = map_method[method_id](
+            exif, reference)
 
     if had_orientation:
         altitude = find_best_altitude(origin, directions)
         logger.info(f"Altitude for orientation based matching {altitude}")
-        directions_scaled = {k: v / DEFAULT_Z * altitude for k, v in directions.items()}
+        directions_scaled = {k: v / DEFAULT_Z *
+                             altitude for k, v in directions.items()}
         points = {k: origin[k] + directions_scaled[k] for k in images}
     else:
         points = origin
@@ -179,9 +201,11 @@ def match_candidates_by_distance(
 
     # we don't want to loose some images because of missing GPS :
     # either ALL of them or NONE of them are used for getting pairs
-    difference = abs(len(representative_points) - len(set(images_cand + images_ref)))
+    difference = abs(len(representative_points) -
+                     len(set(images_cand + images_ref)))
     if difference > 0:
-        logger.warning(f"Couldn't fetch {difference} images. Returning NO pairs.")
+        logger.warning(
+            f"Couldn't fetch {difference} images. Returning NO pairs.")
         return set()
 
     points = np.zeros((len(representative_points), 3))
@@ -273,7 +297,8 @@ def match_candidates_by_graph(
     # will only produce one diagonal edge, so by jittering it, we get more
     # chances of getting such diagonal edges and having more diversity
     for _ in range(rounds):
-        points_current = copy.copy(points) + np.random.rand(*points.shape) * scale
+        points_current = copy.copy(
+            points) + np.random.rand(*points.shape) * scale
         triangles = spatial.Delaunay(points_current).simplices
         for (image1, image2), _ in produce_edges(triangles):
             pairs.add((image1, image2))
@@ -479,7 +504,8 @@ def construct_pairs(
             pairs.update(
                 # pyre-fixme[6]: For 4th argument expected `List[int]` but got
                 #  `ndarray[typing.Any, dtype[typing.Any]]`.
-                pairs_from_neighbors(im, exifs, distances, order, other, max_neighbors)
+                pairs_from_neighbors(im, exifs, distances,
+                                     order, other, max_neighbors)
             )
         else:
             for i in order[:max_neighbors]:
@@ -636,7 +662,8 @@ def match_candidates_from_metadata(
         o = set()
         b = set()
         v = set()
-        pairs = {sorted_pair(i, j) for i in images_ref for j in images_cand if i != j}
+        pairs = {sorted_pair(i, j)
+                 for i in images_ref for j in images_cand if i != j}
     else:
         d = match_candidates_by_distance(
             images_ref, images_cand, exifs, reference, gps_neighbors, max_distance
@@ -644,7 +671,8 @@ def match_candidates_from_metadata(
         g = match_candidates_by_graph(
             images_ref, images_cand, exifs, reference, graph_rounds
         )
-        t = match_candidates_by_time(images_ref, images_cand, exifs, time_neighbors)
+        t = match_candidates_by_time(
+            images_ref, images_cand, exifs, time_neighbors)
         o = match_candidates_by_order(images_ref, images_cand, order_neighbors)
         b = match_candidates_with_bow(
             data,
@@ -711,7 +739,8 @@ def load_histograms(data: DataSetBase, images: Iterable[str]) -> Dict[str, NDArr
     histograms = {}
     bows = bow.load_bows(data.config)
     for im in images:
-        filtered_words = feature_loader.instance.load_words(data, im, masked=True)
+        filtered_words = feature_loader.instance.load_words(
+            data, im, masked=True)
         if filtered_words is None:
             logger.error("No words in image {}".format(im))
             continue

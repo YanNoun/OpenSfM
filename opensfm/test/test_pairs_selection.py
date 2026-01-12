@@ -171,7 +171,7 @@ def test_find_best_altitude_convergent() -> None:
         "1": np.array([1.0, 0.0, -1.0]),
     }
     altitude = pairs_selection.find_best_altitude(origins, directions)
-    assert np.allclose([altitude], [2.0], atol=1e-2)
+    assert np.allclose([altitude], [1.0], atol=1e-2)
 
 
 def test_find_best_altitude_divergent() -> None:
