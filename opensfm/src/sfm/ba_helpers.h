@@ -12,6 +12,11 @@ namespace sfm {
 class GroundControlPoint;
 class BAHelpers {
  public:
+  struct TracksSelection {
+    std::unordered_set<map::TrackId> selected_tracks;
+    std::unordered_set<map::TrackId> other_tracks;
+  };
+
   static py::dict Bundle(
       map::Map& map,
       const std::unordered_map<map::CameraId, geometry::Camera>& camera_priors,
@@ -60,7 +65,7 @@ class BAHelpers {
       const AlignedVector<map::GroundControlPoint>& gcp,
       const py::dict& config);
 
-  static std::unordered_set<map::TrackId> SelectTracksGrid(
+  static TracksSelection SelectTracksGrid(
     map::Map& map,
     const std::unordered_set<map::ShotId>& shot_ids,
     size_t grid_size);

@@ -302,7 +302,7 @@ class OpenSfMConfig:
     # Max number of shots to optimize during local bundle adjustment
     local_bundle_max_shots: int = 30
     # Number of grid division for seleccting tracks in local bundle adjustment
-    local_bundle_grid: int = 8
+    local_bundle_grid: int = 12
     # Number of grid division for selecting tracks in final bundle adjustment
     final_bundle_grid: int = 32
 

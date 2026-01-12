@@ -117,11 +117,10 @@ std::unordered_set<map::Shot*> BAHelpers::DirectShotNeighbors(
 py::tuple BAHelpers::BundleLocal(
     map::Map& map,
     const std::unordered_map<map::CameraId, geometry::Camera>& camera_priors,
-    const std::unordered_map<map::RigCameraId, map::RigCamera>& rig_camera_priors,
+    const std::unordered_map<map::RigCameraId, map::RigCamera>&
+        rig_camera_priors,
     const AlignedVector<map::GroundControlPoint>& gcp,
-    const map::ShotId& central_shot_id,
-    int grid_size,
-    const py::dict& config) {
+    const map::ShotId& central_shot_id, int grid_size, const py::dict& config) {
   py::dict report;
   const auto start = std::chrono::high_resolution_clock::now();
   auto neighborhood = ShotNeighborhood(
@@ -132,14 +131,15 @@ py::tuple BAHelpers::BundleLocal(
   auto& boundary = neighborhood.second;
 
   // Convert subset to set for fast lookup
-  std::unordered_set<map::ShotId> all_shots;
+  std::unordered_set<map::ShotId> all_shots_interior;
   for (auto* shot : interior) {
-    all_shots.insert(shot->GetId());
+    all_shots_interior.insert(shot->GetId());
   }
-  for (auto* shot : boundary) {
-    all_shots.insert(shot->GetId());
-  }
-  const auto subset = SelectTracksGrid(map, all_shots, grid_size);
+  const auto timer_grid_start = std::chrono::high_resolution_clock::now();
+  auto selection = SelectTracksGrid(map, all_shots_interior, grid_size);
+  const auto& subset = selection.selected_tracks;
+  auto& to_retriangulate = selection.other_tracks;
+  const auto timer_grid_end = std::chrono::high_resolution_clock::now();
 
   // set up BA
   auto ba = bundle::BundleAdjuster();
@@ -153,7 +153,8 @@ py::tuple BAHelpers::BundleLocal(
     ba.AddCamera(cam.id, cam, cam_prior, fix_cameras);
   }
   // combine the sets
-  std::unordered_set<map::Shot*> int_and_bound(interior.cbegin(), interior.cend());
+  std::unordered_set<map::Shot*> int_and_bound(interior.cbegin(),
+                                               interior.cend());
   int_and_bound.insert(boundary.cbegin(), boundary.cend());
   std::unordered_set<map::Landmark*> points;
   py::list pt_ids;
@@ -190,7 +191,7 @@ py::tuple BAHelpers::BundleLocal(
     int gps_count = 0;
 
     // if any instance's shot is in boundary
-    // then the entire instance will be fixed    
+    // then the entire instance will be fixed
     bool fix_instance = false;
     for (const auto& shot_n_rig_camera : instance.GetRigCameras()) {
       const auto shot_id = shot_n_rig_camera.first;
@@ -227,7 +228,6 @@ py::tuple BAHelpers::BundleLocal(
     }
   }
 
-  std::unordered_set<map::TrackId> to_retriangulate;
   size_t added_landmarks = 0;
   size_t added_reprojections = 0;
   for (auto* shot : interior) {
@@ -290,7 +290,7 @@ py::tuple BAHelpers::BundleLocal(
 
   ba.SetNumThreads(config["processes"].cast<int>());
   ba.SetMaxNumIterations(10);
-  ba.SetLinearSolverType("DENSE_SCHUR");
+  ba.SetLinearSolverType("SPARSE_SCHUR");
   const auto timer_setup = std::chrono::high_resolution_clock::now();
 
   {
@@ -312,10 +312,11 @@ py::tuple BAHelpers::BundleLocal(
   }
 
   const auto timer_triangulate = std::chrono::high_resolution_clock::now();
-  sfm::retriangulation::Triangulate(map, to_retriangulate, 
-    config["triangulation_min_ray_angle"].cast<float>(),
-    config["triangulation_min_depth"].cast<float>(),
-    config["processes"].cast<int>());
+  sfm::retriangulation::Triangulate(
+      map, to_retriangulate,
+      config["triangulation_min_ray_angle"].cast<float>(),
+      config["triangulation_min_depth"].cast<float>(),
+      config["processes"].cast<int>());
   const auto timer_teardown = std::chrono::high_resolution_clock::now();
   report["brief_report"] = ba.BriefReport();
   report["wall_times"] = py::dict();
@@ -351,8 +352,7 @@ py::tuple BAHelpers::BundleLocal(
 bool BAHelpers::TriangulateGCP(
     const map::GroundControlPoint& point,
     const std::unordered_map<map::ShotId, map::Shot>& shots,
-    float reproj_threshold,
-    Vec3d& coordinates) {
+    float reproj_threshold, Vec3d& coordinates) {
   constexpr auto min_ray_angle = 0.1 * M_PI / 180.0;
   constexpr auto min_depth = 1e-3;  // Assume GCPs 1mm+ away from the camera
   MatX3d os, bs;
@@ -451,15 +451,24 @@ size_t BAHelpers::AddGCPToBundle(
   return added_gcp_observations;
 }
 
-
-std::unordered_set<map::TrackId> BAHelpers::SelectTracksGrid(
-    map::Map& map,
-    const std::unordered_set<map::ShotId>& shot_ids,
+BAHelpers::TracksSelection BAHelpers::SelectTracksGrid(
+    map::Map& map, const std::unordered_set<map::ShotId>& shot_ids,
     size_t grid_size) {
-  std::unordered_set<map::TrackId> set_selected_tracks;
+  TracksSelection selection;
   if (shot_ids.empty() || grid_size <= 1) {
-    return set_selected_tracks;
+    return selection;
   }
+
+  const auto default_num_tracks = grid_size * grid_size * shot_ids.size() / 2;
+  auto& set_selected_tracks = selection.selected_tracks;
+  set_selected_tracks.reserve(default_num_tracks);
+  auto& set_other_tracks = selection.other_tracks;
+  set_other_tracks.reserve(default_num_tracks * 4);
+
+  // Prepare grid cells: each cell holds the longest track (by observation
+  // count)
+  std::vector<std::pair<map::TrackId, size_t>> grid(grid_size * grid_size,
+                                                    {"", 0});
 
   // For each shot (image)
   for (const auto& shot_id : shot_ids) {
@@ -470,13 +479,15 @@ std::unordered_set<map::TrackId> BAHelpers::SelectTracksGrid(
       continue;
     }
 
-    // Prepare grid cells: each cell holds the longest track (by observation count)
-    std::vector<std::pair<map::TrackId, size_t>> grid(grid_size*grid_size, {"", 0});
+    std::fill(grid.begin(), grid.end(),
+              std::make_pair<map::TrackId, size_t>("", 0));
 
     // For each observation in the shot
     for (const auto& lm_obs : shot.GetLandmarkObservations()) {
       auto* lm = lm_obs.first;
       const auto& obs = lm_obs.second;
+      set_other_tracks.insert(lm->id_);
+
       // Get normalized coordinates [0,1]
       const auto normalize = std::max(width, height);
       double x = (obs.point(0) * normalize + width * 0.5) / width;
@@ -485,35 +496,39 @@ std::unordered_set<map::TrackId> BAHelpers::SelectTracksGrid(
       x = std::max(0.0, std::min(1.0, x));
       y = std::max(0.0, std::min(1.0, y));
       // Compute grid cell
-      const int gx = std::min(static_cast<int>(x * grid_size), static_cast<int>(grid_size - 1));
-      const int gy = std::min(static_cast<int>(y * grid_size), static_cast<int>(grid_size - 1));
+      const int gx = std::min(static_cast<int>(x * grid_size),
+                              static_cast<int>(grid_size - 1));
+      const int gy = std::min(static_cast<int>(y * grid_size),
+                              static_cast<int>(grid_size - 1));
       // Track length = number of observations
       const size_t track_len = lm->GetObservations().size();
       // Keep the longest track in this cell
-      if (set_selected_tracks.count(lm->id_) == 0 && track_len > grid[gx+gy*grid_size].second) {
-        grid[gx+gy*grid_size] = {lm->id_, track_len};
+      if (track_len > grid[gx + gy * grid_size].second &&
+          set_selected_tracks.count(lm->id_) == 0) {
+        grid[gx + gy * grid_size] = {lm->id_, track_len};
       }
     }
 
     // Add selected tracks for this shot
-    for (int i = 0; i < static_cast<int>(grid_size*grid_size); ++i) {
+    for (int i = 0; i < static_cast<int>(grid_size * grid_size); ++i) {
       const auto& track_id = grid[i].first;
       if (!track_id.empty()) {
         set_selected_tracks.insert(track_id);
       }
     }
   }
+  for (const auto& selected_track : set_selected_tracks) {
+    set_other_tracks.erase(selected_track);
+  }
 
-  return set_selected_tracks;
+  return selection;
 }
-
-
 
 py::dict BAHelpers::BundleShotPoses(
     map::Map& map, const std::unordered_set<map::ShotId>& shot_ids,
     const std::unordered_map<map::CameraId, geometry::Camera>& camera_priors,
     const std::unordered_map<map::RigCameraId, map::RigCamera>&
-        rig_camera_priors,    
+        rig_camera_priors,
     const py::dict& config) {
   py::dict report;
 
@@ -690,8 +705,7 @@ py::dict BAHelpers::Bundle(
     const std::unordered_map<map::CameraId, geometry::Camera>& camera_priors,
     const std::unordered_map<map::RigCameraId, map::RigCamera>&
         rig_camera_priors,
-    const AlignedVector<map::GroundControlPoint>& gcp,
-    int grid_size,
+    const AlignedVector<map::GroundControlPoint>& gcp, int grid_size,
     const py::dict& config) {
   py::dict report;
 
@@ -699,9 +713,13 @@ py::dict BAHelpers::Bundle(
   const auto& all_shots = map.GetShots();
   std::unordered_set<map::ShotId> shot_ids;
   for (const auto& shot_pair : all_shots) {
-      shot_ids.insert(shot_pair.first);
+    shot_ids.insert(shot_pair.first);
   }
-  const auto subset = SelectTracksGrid(map, shot_ids, grid_size);
+  const auto timer_grid_start = std::chrono::high_resolution_clock::now();
+  auto selection = SelectTracksGrid(map, shot_ids, grid_size);
+  const auto& subset = selection.selected_tracks;
+  auto& to_retriangulate = selection.other_tracks;
+  const auto timer_grid_end = std::chrono::high_resolution_clock::now();
 
   auto ba = bundle::BundleAdjuster();
   const bool fix_cameras = !config["optimize_camera_parameters"].cast<bool>();
@@ -717,7 +735,6 @@ py::dict BAHelpers::Bundle(
   }
 
   // Only add points in the subset
-  std::unordered_set<map::TrackId> to_retriangulate;
   for (const auto& pt_pair : map.GetLandmarks()) {
     const auto& pt = pt_pair.second;
     if (!subset.empty() && subset.count(pt.id_) == 0) {
@@ -873,11 +890,12 @@ py::dict BAHelpers::Bundle(
   const auto timer_run = std::chrono::high_resolution_clock::now();
 
   BundleToMap(ba, map, !fix_cameras);
-  if(!subset.empty()){
-    sfm::retriangulation::Triangulate(map, to_retriangulate, 
-      config["triangulation_min_ray_angle"].cast<float>(),
-      config["triangulation_min_depth"].cast<float>(),
-      config["processes"].cast<int>());
+  if (!subset.empty()) {
+    sfm::retriangulation::Triangulate(
+        map, to_retriangulate,
+        config["triangulation_min_ray_angle"].cast<float>(),
+        config["triangulation_min_depth"].cast<float>(),
+        config["processes"].cast<int>());
   }
   const auto timer_triangulate = std::chrono::high_resolution_clock::now();
 
@@ -904,7 +922,8 @@ py::dict BAHelpers::Bundle(
           .count() /
       1000000.0;
   report["num_images"] = map.GetShots().size();
-  report["num_points"] = subset.empty() ? map.GetLandmarks().size() : subset.size();
+  report["num_points"] =
+      subset.empty() ? map.GetLandmarks().size() : subset.size();
   report["num_reprojections"] = added_reprojections;
   return report;
 }
