@@ -141,47 +141,24 @@ def pairwise_reconstructability(common_tracks: int, rotation_inliers: int) -> fl
         return 0
 
 
-TPairArguments = Tuple[
-    str, str, NDArray, NDArray, pygeometry.Camera, pygeometry.Camera, float
-]
-
-
-def compute_image_pairs(
-    track_dict: Dict[Tuple[str, str], tracking.TPairTracks], data: DataSetBase
-) -> List[Tuple[str, str]]:
-    """All matched image pairs sorted by reconstructability."""
-    cameras = data.load_camera_models()
-    args = _pair_reconstructability_arguments(track_dict, cameras, data)
-    processes = data.config["processes"]
-    result = parallel_map(_compute_pair_reconstructability, args, processes)
-    result = list(result)
-    pairs = [(im1, im2) for im1, im2, r in result if r > 0]
-    score = [r for im1, im2, r in result if r > 0]
-    order = np.argsort(-np.array(score))
-    return [pairs[o] for o in order]
-
-
-def _pair_reconstructability_arguments(
-    track_dict: Dict[Tuple[str, str], tracking.TPairTracks],
-    cameras: Dict[str, pygeometry.Camera],
-    data: DataSetBase,
-) -> List[TPairArguments]:
-    threshold = 4 * data.config["five_point_algo_threshold"]
-    args = []
-    for (im1, im2), (_, p1, p2) in track_dict.items():
-        camera1 = cameras[data.load_exif(im1)["camera"]]
-        camera2 = cameras[data.load_exif(im2)["camera"]]
-        args.append((im1, im2, p1, p2, camera1, camera2, threshold))
-    return args
-
-
-def _compute_pair_reconstructability(args: TPairArguments) -> Tuple[str, str, float]:
-    im1, im2, p1, p2, camera1, camera2, threshold = args
+def calculate_pair_reconstructability(
+    tracks_manager: pymap.TracksManager,
+    im1: str,
+    im2: str,
+    camera1: pygeometry.Camera,
+    camera2: pygeometry.Camera,
+    threshold: float,
+) -> float:
+    p1, p2 = _get_common_feature_arrays(tracks_manager, im1, im2)
     R, inliers = two_view_reconstruction_rotation_only(
         p1, p2, camera1, camera2, threshold
     )
-    r = pairwise_reconstructability(len(p1), len(inliers))
-    return (im1, im2, r)
+    return pairwise_reconstructability(len(p1), len(inliers))
+
+
+TPairArguments = Tuple[
+    str, str, NDArray, NDArray, pygeometry.Camera, pygeometry.Camera, float
+]
 
 
 def add_shot(
@@ -1716,14 +1693,8 @@ def _get_common_feature_arrays(
     im2: str,
 ) -> Tuple[NDArray, NDArray]:
     """Return the feature arrays of common tracks between two images."""
-    features1 = []
-    features2 = []
-    for _, p1, p2 in tracks_manager.get_all_common_observations(im1, im2):
-        features1.append(p1.point)
-        features2.append(p2.point)
-    features1 = np.array(features1)
-    features2 = np.array(features2)
-    return (features1, features2)
+    _, p1, p2 = tracks_manager.get_all_common_observations_arrays(im1, im2)
+    return p1, p2
 
 
 def compute_image_pairs_sequential(
@@ -1742,17 +1713,64 @@ def compute_image_pairs_sequential(
     for (im1, im2), size in connectivity.items():
         if size < min_common:
             continue
-        features1, features2 = _get_common_feature_arrays(
-            tracks_manager, im1, im2)
         camera1 = cameras[data.load_exif(im1)["camera"]]
         camera2 = cameras[data.load_exif(im2)["camera"]]
-        result = _compute_pair_reconstructability(
-            (im1, im2, features1, features2, camera1, camera2, threshold)
+        r = calculate_pair_reconstructability(
+            tracks_manager, im1, im2, camera1, camera2, threshold
         )
-        if result[2] > 0:
-            results.append(result)
+        if r > 0:
+            results.append((im1, im2, r))
     results.sort(key=lambda x: x[2], reverse=True)
     return [(im1, im2) for im1, im2, _ in results]
+
+
+def compute_image_pairs_with_reconstructability_parallel(
+    data: DataSetBase,
+    tracks_manager: pymap.TracksManager,
+    min_common: int = 50,
+) -> List[Tuple[str, str]]:
+    """Compute all possible pairs of images that share at least `min_common` points.
+
+    This runs in parallel and fuses the feature extraction and reconstructability
+    computation to save memory.
+    """
+    cameras = data.load_camera_models()
+    threshold = 4 * data.config["five_point_algo_threshold"]
+
+    shot_ids = tracks_manager.get_shot_ids()
+    shot_to_camera_id = {}
+    for shot in shot_ids:
+        shot_to_camera_id[shot] = data.load_exif(shot)["camera"]
+
+    def process_pair(pair):
+        im1, im2, size = pair
+        if size < min_common:
+            return None
+
+        camera1 = cameras[shot_to_camera_id[im1]]
+        camera2 = cameras[shot_to_camera_id[im2]]
+
+        r = calculate_pair_reconstructability(
+            tracks_manager, im1, im2, camera1, camera2, threshold
+        )
+        if r > 0:
+            return (im1, im2, r)
+        return None
+
+    logger.debug("Computing pairwise connectivity of images")
+    all_pairs_connectivity = tracks_manager.get_all_pairs_connectivity()
+    pairs = [(k[0], k[1], v) for k, v in all_pairs_connectivity.items()]
+
+    logger.debug(
+        f"Computing pairwise reconstructability with {data.config['processes']} processes")
+    processes = data.config["processes"]
+    batch_size = max(1, len(pairs) // (2 * processes))
+
+    results = context.parallel_map(process_pair, pairs, processes, batch_size)
+
+    valid_results = [r for r in results if r is not None]
+    valid_results.sort(key=lambda x: x[2], reverse=True)
+    return [(im1, im2) for im1, im2, _ in valid_results]
 
 
 def incremental_reconstruction(
@@ -1773,13 +1791,10 @@ def incremental_reconstruction(
 
     common_tracks = None
     if data.config["processes"] > 1:
-        # Get pairs in parallel, preload all features for all
-        # pairs of image. Features of an image can be stored
-        # repeatedly in multiple image pairs.
-        # Pros: fast; Cons: high memory usage
-        common_tracks = tracking.all_common_tracks_with_features(
-            tracks_manager, processes=data.config["processes"])
-        pairs = compute_image_pairs(common_tracks, data)
+        # Get pairs in parallel, computing reconstructability on the fly.
+        # Pros: fast, low memory usage
+        pairs = compute_image_pairs_with_reconstructability_parallel(
+            data, tracks_manager)
     else:
         # Get pairs sequentially, load features lazily.
         # Pros: low memory usage; Cons: slow
@@ -1794,13 +1809,7 @@ def incremental_reconstruction(
         if im1 in remaining_images and im2 in remaining_images:
             rec_report = {}
             report["reconstructions"].append(rec_report)
-            if common_tracks is not None:
-                # Save time if the common features are preloaded
-                _, p1, p2 = common_tracks[im1, im2]
-            else:
-                # At the sacrifice of lazily reloading the features, we avoid
-                # storing features for all view pairs in memory
-                p1, p2 = _get_common_feature_arrays(tracks_manager, im1, im2)
+            p1, p2 = _get_common_feature_arrays(tracks_manager, im1, im2)
             reconstruction, rec_report["bootstrap"] = bootstrap_reconstruction(
                 data, tracks_manager, im1, im2, p1, p2
             )

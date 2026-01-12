@@ -42,7 +42,8 @@ def load_features(
         return im, features, colors, segmentations, instances, depths
 
     # Use context.parallel_map for parallel loading
-    results = context.parallel_map(load_one, images, dataset.config.get("processes", 1))
+    results = context.parallel_map(
+        load_one, images, dataset.config.get("processes", 1))
 
     features = {}
     colors = {}
@@ -124,7 +125,8 @@ def create_tracks_manager_from_matches_iter(
                 else NO_VALUE
             )
             instance = (
-                int(instances[image][featureid]) if image in instances else NO_VALUE
+                int(instances[image][featureid]
+                    ) if image in instances else NO_VALUE
             )
 
             obs = pymap.Observation(
@@ -227,17 +229,6 @@ def common_tracks(
 TPairTracks = Tuple[List[str], NDArray[np.float64], NDArray[np.float64]]
 
 
-def all_common_tracks_with_features(
-    tracks_manager: pymap.TracksManager,
-    min_common: int = 50,
-    processes: int = 1,
-) -> Dict[Tuple[str, str], TPairTracks]:
-    tracks = all_common_tracks(
-        tracks_manager, include_features=True, min_common=min_common, processes=processes
-    )
-    return cast(Dict[Tuple[str, str], TPairTracks], tracks)
-
-
 def all_common_tracks_without_features(
     tracks_manager: pymap.TracksManager,
     min_common: int = 50,
@@ -271,7 +262,8 @@ def all_common_tracks(
         im1, im2, size = pair
         if size < min_common:
             return None
-        track_ids, points1, points2 = tracks_manager.get_all_common_observations_arrays(im1, im2)
+        track_ids, points1, points2 = tracks_manager.get_all_common_observations_arrays(
+            im1, im2)
         if include_features:
             return (
                 (im1, im2),
@@ -281,7 +273,8 @@ def all_common_tracks(
             return ((im1, im2), track_ids,)
 
     logger.debug("Computing pairwise connectivity of images")
-    pairs = [(k[0], k[1], v) for k, v in tracks_manager.get_all_pairs_connectivity().items()]
+    pairs = [(k[0], k[1], v)
+             for k, v in tracks_manager.get_all_pairs_connectivity().items()]
 
     logger.debug(f"Gathering pairwise tracks with {processes} processes")
     batch_size = max(1, len(pairs) // (2 * processes))
