@@ -1,7 +1,10 @@
-#include <foundation/union_find.h>
 #include <foundation/types.h>
+#include <foundation/union_find.h>
 #include <map/tracks_manager.h>
 
+#include <algorithm>
+#include <iostream>
+#include <numeric>
 #include <optional>
 #include <sstream>
 #include <unordered_set>
@@ -183,104 +186,156 @@ map::TracksManager InstanciateFromStreamT(S& fstream) {
 }  // namespace
 
 namespace map {
+
+TracksManager::StringId TracksManager::GetShotIndex(const ShotId& id) {
+  const auto it = shot_id_to_index_.find(id);
+  if (it == shot_id_to_index_.end()) {
+    throw std::runtime_error("Accessing invalid shot ID: " + id);
+  }
+  return it->second;
+}
+
+TracksManager::StringId TracksManager::GetTrackIndex(const TrackId& id) {
+  const auto it = track_id_to_index_.find(id);
+  if (it == track_id_to_index_.end()) {
+    throw std::runtime_error("Accessing invalid track ID: " + id);
+  }
+  return it->second;
+}
+
+TracksManager::StringId TracksManager::GetOrInsertShotIndex(const ShotId& id) {
+  const auto it = shot_id_to_index_.find(id);
+  if (it != shot_id_to_index_.end()) {
+    return it->second;
+  }
+  const StringId idx = shot_ids_.size();
+  shot_ids_.push_back(id);
+  shot_id_to_index_[id] = idx;
+  tracks_per_shot_.emplace_back();
+  return idx;
+}
+
+TracksManager::StringId TracksManager::GetOrInsertTrackIndex(
+    const TrackId& id) {
+  const auto it = track_id_to_index_.find(id);
+  if (it != track_id_to_index_.end()) {
+    return it->second;
+  }
+  const StringId idx = track_ids_.size();
+  track_ids_.push_back(id);
+  track_id_to_index_[id] = idx;
+  shots_per_track_.emplace_back();
+  return idx;
+}
+
 void TracksManager::AddObservation(const ShotId& shot_id,
                                    const TrackId& track_id,
                                    const Observation& observation) {
-  tracks_per_shot_[shot_id][track_id] = observation;
-  shots_per_track_[track_id][shot_id] = observation;
+  const StringId shot_idx = GetOrInsertShotIndex(shot_id);
+  const StringId track_idx = GetOrInsertTrackIndex(track_id);
+
+  auto& shot_tracks = tracks_per_shot_[shot_idx];
+  auto it = shot_tracks.find(track_idx);
+  if (it != shot_tracks.end()) {
+    observations_[it->second] = observation;
+    return;
+  }
+
+  // Allocate new index and store observation
+  observations_.push_back(observation);
+  ObservationIndex obs_idx = observations_.size() - 1;
+
+  tracks_per_shot_[shot_idx].emplace(track_idx, obs_idx);
+  shots_per_track_[track_idx].emplace(shot_idx, obs_idx);
 }
 
-void TracksManager::RemoveObservation(const ShotId& shot_id,
-                                      const TrackId& track_id) {
-  const auto find_shot = tracks_per_shot_.find(shot_id);
-  if (find_shot == tracks_per_shot_.end()) {
-    throw std::runtime_error("Accessing invalid shot ID");
-  }
-  const auto find_track = shots_per_track_.find(track_id);
-  if (find_track == shots_per_track_.end()) {
-    throw std::runtime_error("Accessing invalid track ID");
-  }
-  find_shot->second.erase(track_id);
-  find_track->second.erase(shot_id);
-}
+int TracksManager::NumShots() const { return shot_ids_.size(); }
 
-int TracksManager::NumShots() const { return tracks_per_shot_.size(); }
-
-int TracksManager::NumTracks() const { return shots_per_track_.size(); }
+int TracksManager::NumTracks() const { return track_ids_.size(); }
 
 bool TracksManager::HasShotObservations(const ShotId& shot) const {
-  return tracks_per_shot_.count(shot) > 0;
+  return shot_id_to_index_.count(shot) > 0;
 }
 
-std::vector<ShotId> TracksManager::GetShotIds() const {
-  std::vector<ShotId> shots;
-  shots.reserve(tracks_per_shot_.size());
-  for (const auto& it : tracks_per_shot_) {
-    shots.push_back(it.first);
-  }
-  return shots;
-}
+std::vector<ShotId> TracksManager::GetShotIds() const { return shot_ids_; }
 
-std::vector<TrackId> TracksManager::GetTrackIds() const {
-  std::vector<TrackId> tracks;
-  tracks.reserve(shots_per_track_.size());
-  for (const auto& it : shots_per_track_) {
-    tracks.push_back(it.first);
-  }
-  return tracks;
-}
+std::vector<TrackId> TracksManager::GetTrackIds() const { return track_ids_; }
 
 Observation TracksManager::GetObservation(const ShotId& shot,
                                           const TrackId& track) const {
-  const auto find_shot = tracks_per_shot_.find(shot);
-  if (find_shot == tracks_per_shot_.end()) {
-    throw std::runtime_error("Accessing invalid shot ID");
-  }
-  const auto find_track = find_shot->second.find(track);
-  if (find_track == find_shot->second.end()) {
+  // Use map::at to throw if not found, consistent with original implementation
+  const StringId shot_idx = shot_id_to_index_.at(shot);
+  const StringId track_idx = track_id_to_index_.at(track);
+
+  const auto& shot_tracks = tracks_per_shot_[shot_idx];
+  const auto it = shot_tracks.find(track_idx);
+  if (it == shot_tracks.end()) {
     throw std::runtime_error("Accessing invalid track ID");
   }
-  return find_track->second;
+  return observations_[it->second];
 }
 
-const std::unordered_map<TrackId, Observation>&
-TracksManager::GetShotObservations(const ShotId& shot) const {
-  const auto find_shot = tracks_per_shot_.find(shot);
-  if (find_shot == tracks_per_shot_.end()) {
+std::unordered_map<TrackId, Observation> TracksManager::GetShotObservations(
+    const ShotId& shot) const {
+  const auto it = shot_id_to_index_.find(shot);
+  if (it == shot_id_to_index_.end()) {
     throw std::runtime_error("Accessing invalid shot ID");
   }
-  return find_shot->second;
+  const StringId shot_idx = it->second;
+
+  std::unordered_map<TrackId, Observation> result;
+  const auto& shot_tracks = tracks_per_shot_[shot_idx];
+  result.reserve(shot_tracks.size());
+
+  for (const auto& [track_idx, obs_idx] : shot_tracks) {
+    result.emplace(track_ids_[track_idx], observations_[obs_idx]);
+  }
+  return result;
 }
 
-const std::unordered_map<ShotId, Observation>&
-TracksManager::GetTrackObservations(const TrackId& track) const {
-  const auto find_track = shots_per_track_.find(track);
-  if (find_track == shots_per_track_.end()) {
+std::unordered_map<ShotId, Observation> TracksManager::GetTrackObservations(
+    const TrackId& track) const {
+  const auto it = track_id_to_index_.find(track);
+  if (it == track_id_to_index_.end()) {
     throw std::runtime_error("Accessing invalid track ID");
   }
-  return find_track->second;
+  const StringId track_idx = it->second;
+
+  std::unordered_map<ShotId, Observation> result;
+  const auto& track_shots = shots_per_track_[track_idx];
+  result.reserve(track_shots.size());
+
+  for (const auto& [shot_idx, obs_idx] : track_shots) {
+    result.emplace(shot_ids_[shot_idx], observations_[obs_idx]);
+  }
+  return result;
 }
 
 TracksManager TracksManager::ConstructSubTracksManager(
     const std::vector<TrackId>& tracks,
     const std::vector<ShotId>& shots) const {
-  std::unordered_set<TrackId> shotsTmp;
+  std::unordered_set<StringId> allowed_shot_indices;
   for (const auto& id : shots) {
-    shotsTmp.insert(id);
+    const auto it = shot_id_to_index_.find(id);
+    if (it != shot_id_to_index_.end()) {
+      allowed_shot_indices.insert(it->second);
+    }
   }
 
   TracksManager subset;
   for (const auto& track_id : tracks) {
-    const auto find_track = shots_per_track_.find(track_id);
-    if (find_track == shots_per_track_.end()) {
+    const auto it_track = track_id_to_index_.find(track_id);
+    if (it_track == track_id_to_index_.end()) {
       continue;
     }
-    for (const auto& obs : find_track->second) {
-      const auto& shot_id = obs.first;
-      if (shotsTmp.find(shot_id) == shotsTmp.end()) {
-        continue;
+    const StringId track_idx = it_track->second;
+
+    const auto& track_shots = shots_per_track_[track_idx];
+    for (const auto& [shot_idx, obs_idx] : track_shots) {
+      if (allowed_shot_indices.count(shot_idx)) {
+        subset.AddObservation(shot_ids_[shot_idx], track_id,
+                              observations_[obs_idx]);
       }
-      subset.AddObservation(shot_id, track_id, obs.second);
     }
   }
   return subset;
@@ -289,18 +344,27 @@ TracksManager TracksManager::ConstructSubTracksManager(
 std::vector<TracksManager::KeyPointTuple>
 TracksManager::GetAllCommonObservations(const ShotId& shot1,
                                         const ShotId& shot2) const {
-  auto find_shot1 = tracks_per_shot_.find(shot1);
-  auto find_shot2 = tracks_per_shot_.find(shot2);
-  if (find_shot1 == tracks_per_shot_.end() ||
-      find_shot2 == tracks_per_shot_.end()) {
+  const auto find_shot1 = shot_id_to_index_.find(shot1);
+  const auto find_shot2 = shot_id_to_index_.find(shot2);
+  if (find_shot1 == shot_id_to_index_.end() ||
+      find_shot2 == shot_id_to_index_.end()) {
     throw std::runtime_error("Accessing invalid shot ID");
   }
 
+  const StringId idx1 = find_shot1->second;
+  const StringId idx2 = find_shot2->second;
+
+  const auto& tracks1 = tracks_per_shot_[idx1];
+  const auto& tracks2 = tracks_per_shot_[idx2];
+
   std::vector<KeyPointTuple> tuples;
-  for (const auto& p : find_shot1->second) {
-    const auto find = find_shot2->second.find(p.first);
-    if (find != find_shot2->second.end()) {
-      tuples.emplace_back(p.first, p.second, find->second);
+  tuples.reserve(std::min(tracks1.size(), tracks2.size()));
+
+  for (const auto& p : tracks1) {
+    const auto find = tracks2.find(p.first);
+    if (find != tracks2.end()) {
+      tuples.emplace_back(track_ids_.at(p.first), observations_.at(p.second),
+                          observations_.at(find->second));
     }
   }
   return tuples;
@@ -329,41 +393,47 @@ TracksManager::GetAllPairsConnectivity(
     const std::vector<TrackId>& tracks) const {
   std::unordered_map<ShotPair, int, HashPair> common_per_pair;
 
-  std::vector<TrackId> tracks_to_use;
+  std::vector<StringId> tracks_to_use;
   if (tracks.empty()) {
-    for (const auto& track : shots_per_track_) {
-      tracks_to_use.push_back(track.first);
-    }
+    tracks_to_use.resize(track_ids_.size());
+    std::iota(tracks_to_use.begin(), tracks_to_use.end(), 0);
   } else {
-    tracks_to_use = tracks;
+    tracks_to_use.reserve(tracks.size());
+    for (const auto& t_id : tracks) {
+      auto it = track_id_to_index_.find(t_id);
+      if (it != track_id_to_index_.end()) {
+        tracks_to_use.push_back(it->second);
+      }
+    }
   }
 
-  std::unordered_set<ShotId> shots_to_use;
+  std::vector<bool> shots_to_use(shot_ids_.size(), false);
   if (shots.empty()) {
-    for (const auto& shot : tracks_per_shot_) {
-      shots_to_use.insert(shot.first);
-    }
+    std::fill(shots_to_use.begin(), shots_to_use.end(), true);
   } else {
-    for (const auto& shot : shots) {
-      shots_to_use.insert(shot);
+    for (const auto& s_id : shots) {
+      auto it = shot_id_to_index_.find(s_id);
+      if (it != shot_id_to_index_.end()) {
+        shots_to_use[it->second] = true;
+      }
     }
   }
 
-  for (const auto& track_id : tracks_to_use) {
-    const auto find_track = shots_per_track_.find(track_id);
-    if (find_track == shots_per_track_.end()) {
-      continue;
-    }
-    const auto& track = find_track->second;
-    for (const auto& it1 : track) {
-      const auto& shot_id1 = it1.first;
-      if (shots_to_use.find(shot_id1) != shots_to_use.end()) {
-        for (const auto& it2 : track) {
-          const auto& shot_id2 = it2.first;
-          if (shot_id1 < shot_id2 &&
-              shots_to_use.find(shot_id2) != shots_to_use.end()) {
-            ++common_per_pair[std::make_pair(shot_id1, shot_id2)];
-          }
+  for (StringId track_idx : tracks_to_use) {
+    const auto& track_entries = shots_per_track_[track_idx];
+
+    for (const auto& [shot_idx1, _] : track_entries) {
+      if (!shots_to_use[shot_idx1]) {
+        continue;
+      }
+      const auto& shot_id1 = shot_ids_[shot_idx1];
+      for (const auto& [shot_idx2, _] : track_entries) {
+        if (!shots_to_use[shot_idx2]) {
+          continue;
+        }
+        const auto& shot_id2 = shot_ids_[shot_idx2];
+        if (shot_id1 < shot_id2) {
+          ++common_per_pair[std::make_pair(shot_id1, shot_id2)];
         }
       }
     }
@@ -373,30 +443,27 @@ TracksManager::GetAllPairsConnectivity(
 
 TracksManager TracksManager::MergeTracksManager(
     const std::vector<const TracksManager*>& tracks_managers) {
-  // Some typedefs claryfying the aggregations
   using FeatureId_2 = std::pair<ShotId, int>;
-  using SingleTrackId = std::pair<TrackId, int>;
-
-  // Union-find main data
-  std::vector<std::unique_ptr<UnionFindElement<SingleTrackId>>>
-      union_find_elements;
-
-  // Aggregate tracks be merged using (shot_id, feature_id)
+  using TrackRef = std::pair<int, StringId>;
   std::unordered_map<FeatureId_2, std::vector<int>, HashPair>
       observations_per_feature_id;
-  for (int i = 0; i < tracks_managers.size(); ++i) {
-    const auto& manager = tracks_managers[i];
-    for (const auto& track_obses : manager->shots_per_track_) {
+  std::vector<std::unique_ptr<UnionFindElement<TrackRef>>> union_find_elements;
+
+  for (int mgr_idx = 0; mgr_idx < tracks_managers.size(); ++mgr_idx) {
+    const auto* mgr = tracks_managers[mgr_idx];
+    for (StringId track_idx = 0; track_idx < mgr->track_ids_.size();
+         ++track_idx) {
       const auto element_id = union_find_elements.size();
-      for (const auto& shot_obs : track_obses.second) {
-        observations_per_feature_id[std::make_pair(shot_obs.first,
-                                                   shot_obs.second.feature_id)]
-            .push_back(element_id);
+      for (const auto& [shot_idx, obs_idx] : mgr->shots_per_track_[track_idx]) {
+        const auto& obs = mgr->observations_[obs_idx];
+        const ShotId& shot_id = mgr->shot_ids_[shot_idx];
+
+        observations_per_feature_id[{shot_id, obs.feature_id}].emplace_back(
+            element_id);
       }
+
       union_find_elements.emplace_back(
-          std::unique_ptr<UnionFindElement<SingleTrackId>>(
-              new UnionFindElement<SingleTrackId>(
-                  std::make_pair(track_obses.first, i))));
+          new UnionFindElement<TrackRef>({mgr_idx, track_idx}));
     }
   }
 
@@ -425,12 +492,14 @@ TracksManager TracksManager::MergeTracksManager(
     const auto merged_track_id = std::to_string(i);
     // Run over tracks to merged into a new single track
     for (const auto& manager_n_track_id : tracks_agg) {
-      const auto manager_id = manager_n_track_id->data.second;
-      const auto track_id = manager_n_track_id->data.first;
-      const auto track =
-          tracks_managers[manager_id]->shots_per_track_.at(track_id);
-      for (const auto& shot_obs : track) {
-        merged.AddObservation(shot_obs.first, merged_track_id, shot_obs.second);
+      const auto manager_id = manager_n_track_id->data.first;
+      const auto track_idx = manager_n_track_id->data.second;
+      const auto* mgr = tracks_managers[manager_id];
+
+      const auto& observations = mgr->shots_per_track_[track_idx];
+      for (const auto& [shot_idx, obs_idx] : observations) {
+        merged.AddObservation(mgr->shot_ids_[shot_idx], merged_track_id,
+                              mgr->observations_[obs_idx]);
       }
     }
   }

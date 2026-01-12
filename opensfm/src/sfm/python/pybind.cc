@@ -17,8 +17,6 @@ PYBIND11_MODULE(pysfm, m) {
   m.def("count_tracks_per_shot", &sfm::tracks_helpers::CountTracksPerShot);
   m.def("add_connections", &sfm::tracks_helpers::AddConnections,
         py::call_guard<py::gil_scoped_release>());
-  m.def("remove_connections", &sfm::tracks_helpers::RemoveConnections,
-        py::call_guard<py::gil_scoped_release>());
   m.def("filter_badly_conditioned_points",
         &sfm::map_helpers::FilterBadlyConditionedPoints, py::arg("map"),
         py::arg("min_angle_deg") = 1.0, py::arg("min_abs_det") = 1e-15,

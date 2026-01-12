@@ -57,11 +57,4 @@ void AddConnections(map::TracksManager& manager, const map::ShotId& shot_id,
   }
 }
 
-void RemoveConnections(map::TracksManager& manager, const map::ShotId& shot_id,
-                       const std::vector<map::TrackId>& connections) {
-  for (const auto& connection : connections) {
-    manager.RemoveObservation(shot_id, connection);
-  }
-}
-
 }  // namespace sfm::tracks_helpers

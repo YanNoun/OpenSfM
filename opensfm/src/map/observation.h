@@ -8,18 +8,18 @@
 namespace map {
 
 struct Depth {
-  double value;
+  float value;
   bool is_radial;
-  double std_deviation;
+  float std_deviation;
 
   Depth() = default;
-  Depth(double value_, bool is_radial_, double std_deviation_)
+  Depth(float value_, bool is_radial_, float std_deviation_)
       : value(value_), is_radial(is_radial_), std_deviation(std_deviation_) {}
 };
 
 struct Observation {
   Observation() = default;
-  Observation(double x, double y, double s, int r, int g, int b, int feature,
+  Observation(double x, double y, float s, int r, int g, int b, int feature,
               int segmentation = NO_SEMANTIC_VALUE,
               int instance = NO_SEMANTIC_VALUE,
               const std::optional<Depth>& depth = std::nullopt)
@@ -38,7 +38,7 @@ struct Observation {
 
   // Mandatory data
   Eigen::Vector2d point;
-  double scale{1.};
+  float scale{1.};
   Eigen::Vector3i color;
   int feature_id{0};
 

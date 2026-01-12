@@ -63,13 +63,6 @@ TEST_F(TracksManagerTest, AddsObservation) {
   EXPECT_EQ(manager.GetObservation("4", "1"), obs);
 }
 
-TEST_F(TracksManagerTest, RemoveObservation) {
-  manager.RemoveObservation("3", "1");
-  auto copy = track;
-  copy.erase("3");
-  EXPECT_EQ(manager.GetTrackObservations("1"), copy);
-}
-
 TEST_F(TracksManagerTest, ReturnsAllCommonObservations) {
   const auto tuple =
       std::make_tuple("1", map::Observation(1.0, 1.0, 1.0, 1, 1, 1, 1, 1, 1),

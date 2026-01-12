@@ -16,7 +16,5 @@ std::unordered_map<map::ShotId, int> CountTracksPerShot(
     const std::vector<map::TrackId>& tracks);
 void AddConnections(map::TracksManager& manager, const map::ShotId& shot_id,
                     const std::vector<map::TrackId>& connections);
-void RemoveConnections(map::TracksManager& manager, const map::ShotId& shot_id,
-                       const std::vector<map::TrackId>& connections);
 
 }  // namespace sfm::tracks_helpers

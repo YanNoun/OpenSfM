@@ -53,14 +53,4 @@ TEST_F(TracksHelpersTest, AddConnections) {
   EXPECT_EQ(3, counts.at("3"));
 }
 
-TEST_F(TracksHelpersTest, RemoveConnections) {
-  sfm::tracks_helpers::RemoveConnections(manager, "1", connections_remove);
-
-  const auto counts =
-      sfm::tracks_helpers::CountTracksPerShot(manager, {"1", "2", "3"}, {"1"});
-
-  EXPECT_EQ(0, counts.at("1"));
-  EXPECT_EQ(1, counts.at("2"));
-  EXPECT_EQ(1, counts.at("3"));
-}
 }  // namespace
