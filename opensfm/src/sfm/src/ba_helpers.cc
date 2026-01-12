@@ -390,7 +390,6 @@ size_t BAHelpers::AddGCPToBundle(
   const auto& reference = map.GetTopocentricConverter();
   const auto& shots = map.GetShots();
 
-
   const float reproj_threshold =
       config["gcp_reprojection_error_threshold"].cast<float>();
 
@@ -417,15 +416,15 @@ size_t BAHelpers::AddGCPToBundle(
       }
     }
 
-    if(!valid_shots) {
+    if (!valid_shots) {
       continue;
     }
     avg_observations /= valid_shots;
-    const double weight_factor =  std::sqrt(std::max(1.0, avg_observations));
+    const double weight_factor = std::sqrt(std::max(1.0, avg_observations));
 
-
-    const double prior_balance = std::sqrt(std::max(1.0, (double)valid_shots));
-    const double prior_weight = config["gcp_global_weight"].cast<double>() * weight_factor * prior_balance;
+    const double prior_balance = std::max(1.0, (double)valid_shots);
+    const double prior_weight = config["gcp_global_weight"].cast<double>() *
+                                weight_factor * prior_balance;
     constexpr auto point_constant{false};
     ba.AddPoint(point_id, coordinates, point_constant);
     if (!point.lla_.empty()) {
@@ -437,13 +436,14 @@ size_t BAHelpers::AddGCPToBundle(
     }
 
     // Now iterate through the observations
-    const double obs_weight = config["gcp_global_weight"].cast<double>() * weight_factor;
+    const double obs_weight = config["gcp_global_weight"].cast<double>() *
+                              weight_factor * prior_balance;
     for (const auto& obs : point.observations_) {
       const auto& shot_id = obs.shot_id_;
       if (shots.count(shot_id) > 0) {
         constexpr double scale{0.001};
         ba.AddPointProjectionObservation(shot_id, point_id, obs.projection_,
-                                         scale  / obs_weight);
+                                         scale / obs_weight);
         ++added_gcp_observations;
       }
     }
@@ -955,13 +955,13 @@ void BAHelpers::BundleToMap(const bundle::BundleAdjuster& bundle_adjuster,
 
   // Update points
   for (auto& point : output_map.GetLandmarks()) {
-    if(!bundle_adjuster.HasPoint(point.first)) {
+    if (!bundle_adjuster.HasPoint(point.first)) {
       continue;
     }
     auto pt = bundle_adjuster.GetPoint(point.first);
     if (!pt.GetValue().allFinite()) {
       // set large reprojection errors
-      for(auto& proj_error : pt.reprojection_errors) {
+      for (auto& proj_error : pt.reprojection_errors) {
         proj_error.second.setConstant(1.0);
       }
     }
@@ -997,7 +997,10 @@ void BAHelpers::AlignmentConstraints(
         continue;
       }
       Vec3d coordinates;
-      if (TriangulateGCP(point, shots, config["gcp_reprojection_error_threshold"].cast<float>(), coordinates)) {
+      if (TriangulateGCP(
+              point, shots,
+              config["gcp_reprojection_error_threshold"].cast<float>(),
+              coordinates)) {
         Xp.row(idx) = topocentricConverter.ToTopocentric(point.GetLlaVec3d());
         X.row(idx) = coordinates;
         ++idx;

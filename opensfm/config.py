@@ -267,7 +267,7 @@ class OpenSfMConfig:
     # The default vertical standard deviation of the GCPs (in meters)
     gcp_vertical_sd: float = 0.1
     # Global weight for GCPs, expressed a ratio of the sum of (# projections) + (# shots) + (# relative motions)
-    gcp_global_weight: float = 0.1
+    gcp_global_weight: float = 0.04
     # The standard deviation of the rig translation
     rig_translation_sd: float = 0.1
     # The standard deviation of the rig rotation
