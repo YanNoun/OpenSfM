@@ -611,7 +611,8 @@ def reconstruction_to_json(reconstruction: types.Reconstruction) -> Dict[str, An
     if len(reconstruction.rig_instances):
         obj["rig_instances"] = {}
     for rig_instance in reconstruction.rig_instances.values():
-        obj["rig_instances"][rig_instance.id] = rig_instance_to_json(rig_instance)
+        obj["rig_instances"][rig_instance.id] = rig_instance_to_json(
+            rig_instance)
 
     # Extract shots
     for shot in reconstruction.shots.values():
@@ -706,7 +707,8 @@ def camera_from_vector(
     elif projection_type == "fisheye62":
         fx, fy, cx, cy, k1, k2, k3, k4, k5, k6, p1, p2 = parameters
         camera = pygeometry.Camera.create_fisheye62(
-            fx, fy / fx, np.array([cx, cy]), np.array([k1, k2, k3, k4, k5, k6, p1, p2])
+            fx, fy / fx, np.array([cx, cy]), np.array([k1,
+                                                       k2, k3, k4, k5, k6, p1, p2])
         )
     elif projection_type == "fisheye624":
         fx, fy, cx, cy, k1, k2, k3, k4, k5, k6, p1, p2, s0, s1, s2, s3 = parameters
@@ -906,7 +908,7 @@ def _parse_utm_projection_string(line: str) -> str:
 def _parse_projection_string(line: str) -> Optional[str]:
     """Parse the projection string from the GCP format line."""
     line = line.strip()
-    if line == "WGS84":
+    if line in ["WGS84", "EPSG:4326"]:
         return None
     elif line.upper().startswith("WGS84 UTM"):
         return _parse_utm_projection_string(line)
@@ -948,8 +950,9 @@ def read_gcp_list(
     """
     all_lines = fileobj.readlines()
     lines = iter(filter(_valid_gcp_line, all_lines))
-    projection_string = read_gcp_projection(next(lines))
-    projection = geo.construct_proj_transformer(projection_string) if projection_string else None
+    projection_string = _parse_projection_string(next(lines))
+    projection = geo.construct_proj_transformer(
+        projection_string) if projection_string else None
     points = _read_gcp_list_lines(lines, projection, exif)
     return points
 
@@ -1112,7 +1115,8 @@ def reconstruction_to_ply(
             if point_num_views and tracks_manager:
                 obs_count = point.number_of_observations()
                 if obs_count == 0:
-                    obs_count = len(tracks_manager.get_track_observations(point.id))
+                    obs_count = len(
+                        tracks_manager.get_track_observations(point.id))
                 s += " {}".format(obs_count)
 
             vertices.append(s)
@@ -1272,7 +1276,8 @@ def imread_from_fileobject(
         raise IOError("Unable to load image")
 
     if len(image.shape) == 3:
-        image[:, :, :3] = image[:, :, [2, 1, 0]]  # Turn BGR to RGB (or BGRA to RGBA)
+        # Turn BGR to RGB (or BGRA to RGBA)
+        image[:, :, :3] = image[:, :, [2, 1, 0]]
     return image
 
 
@@ -1286,7 +1291,8 @@ def imwrite_from_fileobject(
 ) -> None:
     """Write an image to a file object"""
     if len(image.shape) == 3:
-        image[:, :, :3] = image[:, :, [2, 1, 0]]  # Turn RGB to BGR (or RGBA to BGRA)
+        # Turn RGB to BGR (or RGBA to BGRA)
+        image[:, :, :3] = image[:, :, [2, 1, 0]]
     _, im_buffer = cv2.imencode(ext, image)
     fwb.write(im_buffer)
 

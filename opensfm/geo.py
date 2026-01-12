@@ -12,7 +12,10 @@ WGS84_b = 6356752.314245
 
 
 @overload
-def ecef_from_lla(lat: float, lon: float, alt: float) -> Tuple[float, float, float]: ...
+def ecef_from_lla(lat: float, lon: float,
+                  alt: float) -> Tuple[float, float, float]: ...
+
+
 @overload
 def ecef_from_lla(
     lat: NDArray, lon: NDArray, alt: NDArray
@@ -46,7 +49,10 @@ def ecef_from_lla(
 
 
 @overload
-def lla_from_ecef(x: float, y: float, z: float) -> Tuple[float, float, float]: ...
+def lla_from_ecef(x: float, y: float,
+                  z: float) -> Tuple[float, float, float]: ...
+
+
 @overload
 def lla_from_ecef(
     x: NDArray, y: NDArray, z: NDArray
@@ -163,6 +169,8 @@ def topocentric_from_lla(
     reflon: float,
     refalt: float,
 ) -> Tuple[float, float, float]: ...
+
+
 @overload
 def topocentric_from_lla(
     lat: NDArray,
@@ -212,6 +220,8 @@ def lla_from_topocentric(
     reflon: float,
     refalt: float,
 ) -> Tuple[float, float, float]: ...
+
+
 @overload
 def lla_from_topocentric(
     x: NDArray,
@@ -242,7 +252,10 @@ def lla_from_topocentric(
 
 
 @overload
-def gps_distance(latlon_1: Sequence[float], latlon_2: Sequence[float]) -> float: ...
+def gps_distance(latlon_1: Sequence[float],
+                 latlon_2: Sequence[float]) -> float: ...
+
+
 @overload
 def gps_distance(
     latlon_1: Sequence[NDArray], latlon_2: Sequence[NDArray]
@@ -264,6 +277,7 @@ class TopocentricConverter:
     def to_topocentric(
         self, lat: float, lon: float, alt: float
     ) -> Tuple[float, float, float]: ...
+
     @overload
     def to_topocentric(
         self, lat: NDArray, lon: NDArray, alt: NDArray
@@ -277,7 +291,9 @@ class TopocentricConverter:
         return topocentric_from_lla(lat, lon, alt, self.lat, self.lon, self.alt)
 
     @overload
-    def to_lla(self, x: float, y: float, z: float) -> Tuple[float, float, float]: ...
+    def to_lla(self, x: float, y: float,
+               z: float) -> Tuple[float, float, float]: ...
+
     @overload
     def to_lla(
         self, x: NDArray, y: NDArray, z: NDArray
@@ -292,7 +308,7 @@ class TopocentricConverter:
 
     def __eq__(self, o: "TopocentricConverter") -> bool:
         return np.allclose([self.lat, self.lon, self.alt], (o.lat, o.lon, o.alt))
-    
+
 
 def construct_proj_transformer(proj_str: str, inverse: bool = False) -> pyproj.Transformer:
     """
@@ -314,7 +330,8 @@ def transform_to_proj(
     defined by the given Transformer. We assume the Transformer goes from
     WGS84 to the desired projection.
     """
-    assert projection.source_crs.to_epsg() == 4326, "Transformer source CRS must be WGS84 (EPSG:4326)"
+    assert projection.source_crs.to_epsg(
+    ) == 4326, "Transformer source CRS must be WGS84 (EPSG:4326)"
 
     lat, lon, altitude = reference.to_lla(point[0], point[1], point[2])
     easting, northing = projection.transform(lat, lon)
@@ -362,16 +379,22 @@ def transform_reconstruction_with_proj(
     eps = 1e-3
     for shot in reconstruction.shots.values():
         origin = shot.pose.get_origin()
-                    
+
         # Jacobian for rotation update
-        p0 = np.array(transform_to_proj(origin, reconstruction.reference, transformation))
-        px = np.array(transform_to_proj(origin + [eps, 0, 0], reconstruction.reference, transformation))
-        py = np.array(transform_to_proj(origin + [0, eps, 0], reconstruction.reference, transformation))
-        pz = np.array(transform_to_proj(origin + [0, 0, eps], reconstruction.reference, transformation))
-        J = np.column_stack(((px - p0) / eps, (py - p0) / eps, (pz - p0) / eps))
-        
+        p0 = np.array(transform_to_proj(
+            origin, reconstruction.reference, transformation))
+        px = np.array(transform_to_proj(
+            origin + [eps, 0, 0], reconstruction.reference, transformation))
+        py = np.array(transform_to_proj(
+            origin + [0, eps, 0], reconstruction.reference, transformation))
+        pz = np.array(transform_to_proj(
+            origin + [0, 0, eps], reconstruction.reference, transformation))
+        J = np.column_stack(
+            ((px - p0) / eps, (py - p0) / eps, (pz - p0) / eps))
+
         shot.pose.set_origin(p0)
-        shot.pose.set_rotation_matrix(shot.pose.get_rotation_matrix() @ np.linalg.inv(J))
+        shot.pose.set_rotation_matrix(
+            shot.pose.get_rotation_matrix() @ np.linalg.inv(J))
 
     for point in reconstruction.points.values():
         point.coordinates = transform_to_proj(
