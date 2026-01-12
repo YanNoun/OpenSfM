@@ -328,7 +328,7 @@ py::tuple BAHelpers::BundleLocal(
 
   const auto timer_teardown = std::chrono::high_resolution_clock::now();
   sfm::retriangulation::Triangulate(
-      map, to_retriangulate,
+      map, to_retriangulate, config["triangulation_threshold"].cast<float>(),
       config["triangulation_min_ray_angle"].cast<float>(),
       config["triangulation_min_depth"].cast<float>(),
       config["processes"].cast<int>());
@@ -964,7 +964,7 @@ py::dict BAHelpers::Bundle(
 
   if (!subset.empty()) {
     sfm::retriangulation::Triangulate(
-        map, to_retriangulate,
+        map, to_retriangulate, config["triangulation_threshold"].cast<float>(),
         config["triangulation_min_ray_angle"].cast<float>(),
         config["triangulation_min_depth"].cast<float>(),
         config["processes"].cast<int>());

@@ -38,4 +38,9 @@ PYBIND11_MODULE(pysfm, m) {
 
   m.def("realign_maps", &sfm::retriangulation::RealignMaps,
         py::call_guard<py::gil_scoped_release>());
+
+  m.def("reconstruct_from_tracks_manager",
+        &sfm::retriangulation::ReconstructFromTracksManager, py::arg("map"),
+        py::arg("tracks_manager"), py::arg("config"),
+        py::call_guard<py::gil_scoped_release>());
 }

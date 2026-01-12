@@ -1,10 +1,13 @@
 set(FOUNDATION_FILES
+    memory.h
     stl_extensions.h
+    threading.h
     types.h
     newton_raphson.h
     numeric.h
     optional.h
     union_find.h
+    src/memory.cc
     src/types.cc
     src/newton_raphson.cc
     src/numeric.cc

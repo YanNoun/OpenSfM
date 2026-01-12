@@ -1102,32 +1102,39 @@ def retriangulate(
     report = {}
     report["num_points_before"] = len(reconstruction.points)
 
-    threshold = config["triangulation_threshold"]
-    min_ray_angle = config["triangulation_min_ray_angle"]
-    min_depth = config["triangulation_min_depth"]
-    refinement_iterations = config["triangulation_refinement_iterations"]
+    if config["triangulation_type"] == "FULL":
+        reconstruction.points = {}
+        pysfm.reconstruct_from_tracks_manager(
+            reconstruction.map, tracks_manager, config
+        )
+    else:
+        threshold = config["triangulation_threshold"]
+        min_ray_angle = config["triangulation_min_ray_angle"]
+        min_depth = config["triangulation_min_depth"]
+        refinement_iterations = config["triangulation_refinement_iterations"]
 
-    reconstruction.points = {}
+        reconstruction.points = {}
 
-    all_shots_ids = set(tracks_manager.get_shot_ids())
+        all_shots_ids = set(tracks_manager.get_shot_ids())
 
-    triangulator = TrackTriangulator(
-        reconstruction, TrackHandlerTrackManager(
-            tracks_manager, reconstruction)
-    )
-    tracks = set()
-    for image in reconstruction.shots.keys():
-        if image in all_shots_ids:
-            tracks.update(tracks_manager.get_shot_observations(image).keys())
-    for track in tracks:
-        if config["triangulation_type"] == "ROBUST":
-            triangulator.triangulate_robust(
-                track, threshold, min_ray_angle, min_depth, refinement_iterations
-            )
-        elif config["triangulation_type"] == "FULL":
-            triangulator.triangulate(
-                track, threshold, min_ray_angle, min_depth, refinement_iterations
-            )
+        triangulator = TrackTriangulator(
+            reconstruction, TrackHandlerTrackManager(
+                tracks_manager, reconstruction)
+        )
+        tracks = set()
+        for image in reconstruction.shots.keys():
+            if image in all_shots_ids:
+                tracks.update(
+                    tracks_manager.get_shot_observations(image).keys())
+        for track in tracks:
+            if config["triangulation_type"] == "ROBUST":
+                triangulator.triangulate_robust(
+                    track, threshold, min_ray_angle, min_depth, refinement_iterations
+                )
+            else:
+                raise ValueError(
+                    f"This should be handled before in CPP: {config['triangulation_type']}"
+                )
 
     report["num_points_after"] = len(reconstruction.points)
     chrono.lap("retriangulate")
