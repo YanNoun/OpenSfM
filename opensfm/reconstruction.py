@@ -1601,6 +1601,11 @@ def grow_reconstruction(
                 logger.info("Some images can not be added")
                 break
 
+        if config["incremental_max_shots_count"] > 0 and len(reconstruction.shots) >= config["incremental_max_shots_count"]:
+            logger.info(
+                f"Reached the maximum number of shots: {config['incremental_max_shots_count']}")
+            break
+
     logger.info("-------------------------------------------------------")
 
     align_result = align_reconstruction(
@@ -1843,6 +1848,13 @@ def incremental_reconstruction(
                 reconstructions.append(reconstruction)
                 reconstructions = sorted(
                     reconstructions, key=lambda x: -len(x.shots))
+
+            if data.config["incremental_max_shots_count"] > 0 and sum(
+                len(r.shots) for r in reconstructions
+            ) >= data.config["incremental_max_shots_count"]:
+                logger.info(
+                    f"Reached the maximum number of shots")
+                break
 
     for k, r in enumerate(reconstructions):
         logger.info(
