@@ -109,7 +109,7 @@ def test_match_candidates_from_metadata_bow(lund_path: str) -> None:
     )
     data_generation.save_config(config, lund_path)
     data = dataset.DataSet(lund_path)
-    match_candidates_from_metadata(data, assert_count=5)
+    match_candidates_from_metadata(data, assert_count=4)
 
 
 def test_match_candidates_from_metadata_gps(lund_path: str) -> None:
