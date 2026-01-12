@@ -1108,7 +1108,15 @@ void BundleAdjuster::Run() {
   }
   options.num_threads = num_threads_;
   options.max_num_iterations = max_num_iterations_;
+  options.dense_linear_algebra_library_type = ceres::LAPACK;
   options.sparse_linear_algebra_library_type = ceres::SUITE_SPARSE;
+
+// Activate NESDIS only for Ceres >= 2.2
+#if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 2
+#ifdef CERES_NO_EIGEN_METIS
+  options.linear_solver_ordering_type = ceres::NESDIS;
+#endif  // CERES_NO_EIGEN_METIS
+#endif  // CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 2
 
   ceres::Solve(options, &problem, &last_run_summary_);
 
