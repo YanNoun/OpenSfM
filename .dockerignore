@@ -12,6 +12,7 @@
 !LICENSE
 !opensfm
 !pyproject.toml
+!conda.yml
 !README.md
 !setup.cfg
 !setup.py

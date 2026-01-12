@@ -34,4 +34,4 @@ jobs:
 
       - name: Run Python tests
         shell: bash -l {0}
-        run: python -m pytest
+        run: export LD_PRELOAD=$CONDA_PREFIX/lib/libtcmalloc.so && python -m pytest

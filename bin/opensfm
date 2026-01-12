@@ -9,4 +9,8 @@ else
     PYTHON=python
 fi
 
+if [ "$(uname)" == "Linux" ]; then
+    export LD_PRELOAD=$CONDA_PREFIX/lib/libtcmalloc.so
+fi
+
 "$PYTHON" "$DIR"/opensfm_main.py "$@"
