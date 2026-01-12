@@ -210,8 +210,8 @@ void BundleAdjuster::AddReconstructionInstance(
   reconstructions_assignments_[instance_id] = reconstruction_id;
 }
 
-void BundleAdjuster::AddPoint(const std::string& id, const Vec3d& position,
-                              bool constant) {
+Point* BundleAdjuster::AddPoint(const std::string& id, const Vec3d& position,
+                                bool constant) {
   auto point =
       &points_
            .emplace(std::piecewise_construct, std::forward_as_tuple(id),
@@ -221,6 +221,7 @@ void BundleAdjuster::AddPoint(const std::string& id, const Vec3d& position,
   if (constant) {
     point->SetParametersToOptimize({});
   }
+  return point;
 }
 
 void BundleAdjuster::AddPointPrior(const std::string& point_id,
@@ -247,7 +248,20 @@ void BundleAdjuster::AddPointProjectionObservation(
   o.coordinates = observation;
   o.std_deviation = std_deviation;
   o.depth_prior = depth_prior;
-  point_projection_observations_.push_back(o);
+  point_projection_observations_.emplace_back(o);
+}
+
+void BundleAdjuster::AddPointProjectionObservationRaw(
+    Shot* shot, Point* point, const Vec2d& observation, double std_deviation,
+    const std::optional<map::Depth>& depth_prior) {
+  PointProjectionObservation o;
+  o.shot = shot;
+  o.camera = shot->GetCamera();
+  o.point = point;
+  o.coordinates = observation;
+  o.std_deviation = std_deviation;
+  o.depth_prior = depth_prior;
+  point_projection_observations_.emplace_back(o);
 }
 
 void BundleAdjuster::AddRelativeMotion(const RelativeMotion& rm) {
@@ -809,7 +823,8 @@ void BundleAdjuster::Run() {
         projection_type, use_analytic_, observation, projection_loss, &problem);
 
     // Add relative depth error blocks
-    geometry::Dispatch<AddRelativeDepthError>(projection_type, observation, projection_loss, &problem);
+    geometry::Dispatch<AddRelativeDepthError>(projection_type, observation,
+                                              projection_loss, &problem);
   }
 
   // Add relative motion errors
@@ -1243,6 +1258,10 @@ Point BundleAdjuster::GetPoint(const std::string& id) const {
   return points_.at(id);
 }
 
+Point* BundleAdjuster::GetPointRaw(const std::string& id) {
+  return &points_.at(id);
+}
+
 bool BundleAdjuster::HasPoint(const std::string& id) const {
   return points_.find(id) != points_.end();
 }
@@ -1275,8 +1294,13 @@ RigInstance BundleAdjuster::GetRigInstance(
 std::map<std::string, RigCamera> BundleAdjuster::GetRigCameras() const {
   return rig_cameras_;
 }
+
 std::map<std::string, RigInstance> BundleAdjuster::GetRigInstances() const {
   return rig_instances_;
+}
+
+Shot* BundleAdjuster::GetShotRaw(const std::string& id) {
+  return &shots_.at(id);
 }
 
 std::string BundleAdjuster::BriefReport() const {

@@ -122,11 +122,14 @@ py::tuple BAHelpers::BundleLocal(
     const AlignedVector<map::GroundControlPoint>& gcp,
     const map::ShotId& central_shot_id, int grid_size, const py::dict& config) {
   py::dict report;
-  const auto start = std::chrono::high_resolution_clock::now();
+
+  const auto timer_neighborhood_start =
+      std::chrono::high_resolution_clock::now();
   auto neighborhood = ShotNeighborhood(
       map, central_shot_id, config["local_bundle_radius"].cast<size_t>(),
       config["local_bundle_min_common_points"].cast<size_t>(),
       config["local_bundle_max_shots"].cast<size_t>());
+  const auto timer_neighborhood_end = std::chrono::high_resolution_clock::now();
   auto& interior = neighborhood.first;
   auto& boundary = neighborhood.second;
 
@@ -142,6 +145,7 @@ py::tuple BAHelpers::BundleLocal(
   const auto timer_grid_end = std::chrono::high_resolution_clock::now();
 
   // set up BA
+  const auto start = std::chrono::high_resolution_clock::now();
   auto ba = bundle::BundleAdjuster();
   ba.SetUseAnalyticDerivatives(
       config["bundle_analytic_derivatives"].cast<bool>());
@@ -156,8 +160,6 @@ py::tuple BAHelpers::BundleLocal(
   std::unordered_set<map::Shot*> int_and_bound(interior.cbegin(),
                                                interior.cend());
   int_and_bound.insert(boundary.cbegin(), boundary.cend());
-  std::unordered_set<map::Landmark*> points;
-  py::list pt_ids;
 
   constexpr bool point_constant{false};
   constexpr bool rig_camera_constant{true};
@@ -228,48 +230,61 @@ py::tuple BAHelpers::BundleLocal(
     }
   }
 
+  double t_projections = 0;
+  const auto t_pts_start = std::chrono::high_resolution_clock::now();
+
+  // Retrieve a mapping between map shots and bundle shots we're just created
+  std::unordered_map<map::Shot*, bundle::Shot*> shot_lookup;
+  shot_lookup.reserve(interior.size() + boundary.size());
+  for (auto* shot : interior) {
+    shot_lookup[shot] = ba.GetShotRaw(shot->id_);
+  }
+  for (auto* shot : boundary) {
+    shot_lookup[shot] = ba.GetShotRaw(shot->id_);
+  }
+
+  // Run over selected tracks only and add all their observations
+  std::unordered_set<map::Landmark*> points;
+  py::list pt_ids;
   size_t added_landmarks = 0;
   size_t added_reprojections = 0;
-  for (auto* shot : interior) {
-    // Add all points of the shots that are in the interior
-    for (const auto& lm_obs : shot->GetLandmarkObservations()) {
-      auto* lm = lm_obs.first;
-      // Only add points in the subset
-      if (!subset.empty() && subset.count(lm->id_) == 0) {
-        to_retriangulate.insert(lm->id_);
-        continue;
+  for (const auto& selected_track_id : subset) {
+    auto& lm = map.GetLandmark(selected_track_id);
+
+    auto* ba_point = ba.AddPoint(lm.id_, lm.GetGlobalPos(), point_constant);
+
+    points.insert(&lm);
+    pt_ids.append(lm.id_);
+    ++added_landmarks;
+
+    for (const auto& obs_pair : lm.GetObservations()) {
+      auto* shot = obs_pair.first;
+      auto* obs = obs_pair.second;
+
+      auto s_it = shot_lookup.find(shot);
+      if (s_it == shot_lookup.end()) {
+        throw std::runtime_error("Shot " + shot->id_ +
+                                 " not found in bundle adjuster");
       }
-      if (points.count(lm) == 0) {
-        points.insert(lm);
-        pt_ids.append(lm->id_);
-        ba.AddPoint(lm->id_, lm->GetGlobalPos(), point_constant);
-        ++added_landmarks;
-      }
-      const auto& obs = lm_obs.second;
-      ba.AddPointProjectionObservation(shot->id_, lm_obs.first->id_, obs.point,
-                                       obs.scale, obs.depth_prior);
+      ba.AddPointProjectionObservationRaw(s_it->second, ba_point, obs->point,
+                                          obs->scale, obs->depth_prior);
       ++added_reprojections;
     }
   }
-  for (auto* shot : boundary) {
-    for (const auto& lm_obs : shot->GetLandmarkObservations()) {
-      auto* lm = lm_obs.first;
-      // Only add points in the subset
-      if (!subset.empty() && subset.count(lm->id_) == 0) {
-        to_retriangulate.insert(lm->id_);
-        continue;
-      }
-      if (points.count(lm) > 0) {
-        const auto& obs = lm_obs.second;
-        ba.AddPointProjectionObservation(shot->id_, lm_obs.first->id_,
-                                         obs.point, obs.scale, obs.depth_prior);
-        ++added_reprojections;
-      }
-    }
-  }
+
+  t_projections += std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::high_resolution_clock::now() - t_pts_start)
+                       .count() /
+                   1000000.0;
 
   if (config["bundle_use_gcp"].cast<bool>() && !gcp.empty()) {
+    const auto t_gcp_start = std::chrono::high_resolution_clock::now();
     AddGCPToBundle(ba, map, gcp, config);
+    t_projections +=
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::high_resolution_clock::now() - t_gcp_start)
+            .count() /
+        1000000.0;
   }
 
   ba.SetPointProjectionLossFunction(
@@ -311,17 +326,31 @@ py::tuple BAHelpers::BundleLocal(
     point->SetReprojectionErrors(pt.reprojection_errors);
   }
 
-  const auto timer_triangulate = std::chrono::high_resolution_clock::now();
+  const auto timer_teardown = std::chrono::high_resolution_clock::now();
   sfm::retriangulation::Triangulate(
       map, to_retriangulate,
       config["triangulation_min_ray_angle"].cast<float>(),
       config["triangulation_min_depth"].cast<float>(),
       config["processes"].cast<int>());
-  const auto timer_teardown = std::chrono::high_resolution_clock::now();
+  const auto timer_triangulate = std::chrono::high_resolution_clock::now();
+
   report["brief_report"] = ba.BriefReport();
   report["wall_times"] = py::dict();
+  report["wall_times"]["neighborhood"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          timer_neighborhood_end - timer_neighborhood_start)
+          .count() /
+      1000000.0;
   report["wall_times"]["setup"] =
       std::chrono::duration_cast<std::chrono::microseconds>(timer_setup - start)
+          .count() /
+      1000000.0;
+  report["wall_times"]["setup_projections"] = t_projections;
+  report["wall_times"]["setup_other"] =
+      report["wall_times"]["setup"].cast<double>() - t_projections;
+  report["wall_times"]["grid"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(timer_grid_end -
+                                                            timer_grid_start)
           .count() /
       1000000.0;
   report["wall_times"]["run"] =
@@ -331,12 +360,12 @@ py::tuple BAHelpers::BundleLocal(
       1000000.0;
   report["wall_times"]["teardown"] =
       std::chrono::duration_cast<std::chrono::microseconds>(timer_teardown -
-                                                            timer_triangulate)
+                                                            timer_run)
           .count() /
       1000000.0;
   report["wall_times"]["triangulate"] =
       std::chrono::duration_cast<std::chrono::microseconds>(timer_triangulate -
-                                                            timer_run)
+                                                            timer_teardown)
           .count() /
       1000000.0;
   report["num_images"] = interior.size();
@@ -637,6 +666,7 @@ py::dict BAHelpers::BundleShotPoses(
   }
 
   // add observations
+  const auto t_projections_start = std::chrono::high_resolution_clock::now();
   for (const auto& shot_id : shot_ids) {
     const auto& shot = map.GetShot(shot_id);
     for (const auto& lm_obs : shot.GetLandmarkObservations()) {
@@ -645,6 +675,11 @@ py::dict BAHelpers::BundleShotPoses(
                                        obs.scale, obs.depth_prior);
     }
   }
+  const double t_projections =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::high_resolution_clock::now() - t_projections_start)
+          .count() /
+      1000000.0;
 
   ba.SetPointProjectionLossFunction(
       config["loss_function"].cast<std::string>(),
@@ -687,6 +722,9 @@ py::dict BAHelpers::BundleShotPoses(
       std::chrono::duration_cast<std::chrono::microseconds>(timer_setup - start)
           .count() /
       1000000.0;
+  report["wall_times"]["setup_projections"] = t_projections;
+  report["wall_times"]["setup_other"] =
+      report["wall_times"]["setup"].cast<double>() - t_projections;
   report["wall_times"]["run"] =
       std::chrono::duration_cast<std::chrono::microseconds>(timer_run -
                                                             timer_setup)
@@ -735,13 +773,24 @@ py::dict BAHelpers::Bundle(
   }
 
   // Only add points in the subset
-  for (const auto& pt_pair : map.GetLandmarks()) {
-    const auto& pt = pt_pair.second;
-    if (!subset.empty() && subset.count(pt.id_) == 0) {
-      to_retriangulate.insert(pt.id_);
-      continue;
+  std::unordered_map<const map::Landmark*, bundle::Point*> landmark_lookup;
+  landmark_lookup.reserve(subset.empty() ? map.GetLandmarks().size()
+                                         : subset.size());
+
+  // Two different - yet similar - loops to avoid
+  // one dummy structure allocation
+  if (!subset.empty()) {
+    for (const auto& track_id : subset) {
+      const auto& pt = map.GetLandmark(track_id);
+      ba.AddPoint(pt.id_, pt.GetGlobalPos(), false);
+      landmark_lookup[&pt] = ba.GetPointRaw(pt.id_);
     }
-    ba.AddPoint(pt.id_, pt.GetGlobalPos(), false);
+  } else {
+    for (const auto& lm_pair : map.GetLandmarks()) {
+      const auto& pt = lm_pair.second;
+      ba.AddPoint(pt.id_, pt.GetGlobalPos(), false);
+      landmark_lookup[&pt] = ba.GetPointRaw(pt.id_);
+    }
   }
 
   auto align_method = config["align_method"].cast<std::string>();
@@ -827,31 +876,52 @@ py::dict BAHelpers::Bundle(
     }
   }
 
+  double t_projections = 0;
+  const auto t_obs_start = std::chrono::high_resolution_clock::now();
   size_t added_reprojections = 0;
+
+  std::unordered_map<const map::Shot*, bundle::Shot*> shot_lookup;
+  shot_lookup.reserve(map.GetShots().size());
+
   for (const auto& shot_pair : map.GetShots()) {
     const auto& shot = shot_pair.second;
 
-    // that one doesn't have it's rig counterpart
     if (do_add_align_vector) {
       constexpr double std_dev = 1e-3;
       ba.AddAbsoluteUpVector(shot.id_, up_vector, std_dev);
     }
-
-    // setup observations for any shot type
-    for (const auto& lm_obs : shot.GetLandmarkObservations()) {
-      if (!subset.empty() && subset.count(lm_obs.first->id_) == 0) {
-        to_retriangulate.insert(lm_obs.first->id_);
-        continue;
-      }
-      const auto& obs = lm_obs.second;
-      ba.AddPointProjectionObservation(shot.id_, lm_obs.first->id_, obs.point,
-                                       obs.scale, obs.depth_prior);
-      ++added_reprojections;
-    }
+    shot_lookup[&shot] = ba.GetShotRaw(shot.id_);
   }
 
+  for (const auto& lm_pair : landmark_lookup) {
+    const map::Landmark* lm = lm_pair.first;
+    bundle::Point* bp = lm_pair.second;
+
+    for (const auto& obs_entry : lm->GetObservations()) {
+      map::Shot* shot = obs_entry.first;
+      const map::Observation* obs = obs_entry.second;
+
+      auto s_it = shot_lookup.find(shot);
+      if (s_it != shot_lookup.end()) {
+        ba.AddPointProjectionObservationRaw(s_it->second, bp, obs->point,
+                                            obs->scale, obs->depth_prior);
+        ++added_reprojections;
+      }
+    }
+  }
+  t_projections += std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::high_resolution_clock::now() - t_obs_start)
+                       .count() /
+                   1000000.0;
+
   if (config["bundle_use_gcp"].cast<bool>() && !gcp.empty()) {
+    const auto t_gcp_start = std::chrono::high_resolution_clock::now();
     AddGCPToBundle(ba, map, gcp, config);
+    t_projections +=
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::high_resolution_clock::now() - t_gcp_start)
+            .count() /
+        1000000.0;
   }
 
   if (config["bundle_compensate_gps_bias"].cast<bool>() && !gcp.empty()) {
@@ -890,6 +960,8 @@ py::dict BAHelpers::Bundle(
   const auto timer_run = std::chrono::high_resolution_clock::now();
 
   BundleToMap(ba, map, !fix_cameras);
+  const auto timer_teardown = std::chrono::high_resolution_clock::now();
+
   if (!subset.empty()) {
     sfm::retriangulation::Triangulate(
         map, to_retriangulate,
@@ -899,11 +971,18 @@ py::dict BAHelpers::Bundle(
   }
   const auto timer_triangulate = std::chrono::high_resolution_clock::now();
 
-  const auto timer_teardown = std::chrono::high_resolution_clock::now();
   report["brief_report"] = ba.BriefReport();
   report["wall_times"] = py::dict();
   report["wall_times"]["setup"] =
       std::chrono::duration_cast<std::chrono::microseconds>(timer_setup - start)
+          .count() /
+      1000000.0;
+  report["wall_times"]["setup_projections"] = t_projections;
+  report["wall_times"]["setup_other"] =
+      report["wall_times"]["setup"].cast<double>() - t_projections;
+  report["wall_times"]["grid"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(timer_grid_end -
+                                                            timer_grid_start)
           .count() /
       1000000.0;
   report["wall_times"]["run"] =
@@ -911,14 +990,14 @@ py::dict BAHelpers::Bundle(
                                                             timer_setup)
           .count() /
       1000000.0;
-  report["wall_times"]["triangulate"] =
-      std::chrono::duration_cast<std::chrono::microseconds>(timer_triangulate -
+  report["wall_times"]["teardown"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(timer_teardown -
                                                             timer_run)
           .count() /
       1000000.0;
-  report["wall_times"]["teardown"] =
-      std::chrono::duration_cast<std::chrono::microseconds>(timer_teardown -
-                                                            timer_triangulate)
+  report["wall_times"]["triangulate"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(timer_triangulate -
+                                                            timer_teardown)
           .count() /
       1000000.0;
   report["num_images"] = map.GetShots().size();

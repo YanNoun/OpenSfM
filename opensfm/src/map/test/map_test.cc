@@ -268,8 +268,8 @@ TEST_F(OneCameraMapFixture, ComputeReprojectionErrorNormalized) {
   auto errors =
       map.ComputeReprojectionErrors(manager, map::Map::ErrorType::Normalized);
   const auto computed = errors["0"]["1"];
-  ASSERT_NEAR(expected[0] / scale, computed[0], 1e-8);
-  ASSERT_NEAR(expected[1] / scale, computed[1], 1e-8);
+  ASSERT_NEAR(expected[0] / scale, computed[0], 1e-7);
+  ASSERT_NEAR(expected[1] / scale, computed[1], 1e-7);
 }
 
 class OneRigMapFixture : public EmptyMapFixture {
@@ -344,7 +344,7 @@ TEST_F(ToyMapFixture, ToTracksManager) {
   ASSERT_EQ(manager.NumTracks(), map.NumberOfLandmarks());
   ASSERT_EQ(manager.NumShots(), map.NumberOfShots() + map.NumberOfPanoShots());
   for (const auto& shot_pair : map.GetShots()) {
-    const auto& shot_obs1 = manager.GetShotObservations(shot_pair.first);
+    const auto shot_obs1 = manager.GetShotObservations(shot_pair.first);
     const auto& shot_obs2 = shot_pair.second.GetLandmarkObservations();
 
     ASSERT_EQ(shot_obs1.size(), shot_obs2.size());

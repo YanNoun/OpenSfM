@@ -66,8 +66,8 @@ std::unique_ptr<Map> Map::DeepCopy(const Map& map, bool copy_observations) {
 
 void Map::AddObservation(Shot* const shot, Landmark* const lm,
                          const Observation& obs) {
-  lm->AddObservation(shot, obs.feature_id);
-  shot->CreateObservation(lm, obs);
+  auto* observation = shot->CreateObservation(lm, obs);
+  lm->AddObservation(shot, observation);
 }
 
 void Map::AddObservation(const ShotId& shot_id, const LandmarkId& lm_id,
@@ -131,16 +131,11 @@ Landmark& Map::GetLandmark(const LandmarkId& lm_id) {
 }
 
 void Map::ClearObservationsAndLandmarks() {
-  // first JUST delete the observations of the landmark
-  for (auto& id_lm : landmarks_) {
-    auto& observations = id_lm.second.GetObservations();
-    for (const auto& obs : observations) {
-      obs.first->RemoveLandmarkObservation(obs.second);
-    }
-    id_lm.second.ClearObservations();
+  for (auto& shot_pair : shots_) {
+    shot_pair.second.ClearLandmarkObservationsUnsafe();
   }
-  // then clear the landmarks_
-  landmarks_.clear();
+  decltype(landmarks_) empty_landmarks;
+  landmarks_.swap(empty_landmarks);
 }
 
 void Map::CleanLandmarksBelowMinObservations(const size_t min_observations) {
@@ -151,8 +146,8 @@ void Map::CleanLandmarksBelowMinObservations(const size_t min_observations) {
       const auto& observations = landmark.GetObservations();
       for (const auto& obs : observations) {
         Shot* shot = obs.first;
-        const auto feat_id = obs.second;
-        shot->RemoveLandmarkObservation(feat_id);
+        const auto* feat = obs.second;
+        shot->RemoveLandmarkObservation(feat->feature_id);
       }
       // 3) Remove from landmarks
       it = landmarks_.erase(it);
@@ -308,8 +303,8 @@ void Map::RemoveLandmark(const LandmarkId& lm_id) {
     const auto& observations = landmark.GetObservations();
     for (const auto& obs : observations) {
       Shot* shot = obs.first;
-      const auto feat_id = obs.second;
-      shot->RemoveLandmarkObservation(feat_id);
+      const auto feat = obs.second;
+      shot->RemoveLandmarkObservation(feat->feature_id);
     }
 
     // 3) Remove from landmarks

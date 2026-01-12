@@ -68,7 +68,8 @@ PYBIND11_MODULE(pybundle, m) {
            &bundle::BundleAdjuster::AddRigInstancePositionPrior)
       .def("set_scale_sharing", &bundle::BundleAdjuster::SetScaleSharing)
       .def("get_reconstruction", &bundle::BundleAdjuster::GetReconstruction)
-      .def("add_point", &bundle::BundleAdjuster::AddPoint)
+      .def("add_point", &bundle::BundleAdjuster::AddPoint,
+           py::return_value_policy::reference)
       .def("add_point_prior", &bundle::BundleAdjuster::AddPointPrior)
       .def("get_point", &bundle::BundleAdjuster::GetPoint)
       .def("has_point", &bundle::BundleAdjuster::HasPoint)

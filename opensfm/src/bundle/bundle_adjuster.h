@@ -174,7 +174,7 @@ class BundleAdjuster {
   // Basic
   void AddCamera(const std::string& id, const geometry::Camera& camera,
                  const geometry::Camera& prior, bool constant);
-  void AddPoint(const std::string& id, const Vec3d& position, bool constant);
+  Point* AddPoint(const std::string& id, const Vec3d& position, bool constant);
   void AddPointPrior(const std::string& id, const Vec3d& position,
                      const Vec3d& std_deviation, bool has_altitude_prior);
   void SetCameraBias(const std::string& id, const geometry::Similarity& bias);
@@ -204,6 +204,9 @@ class BundleAdjuster {
       const std::string& shot, const std::string& point,
       const Vec2d& observation, double std_deviation,
       const std::optional<map::Depth>& depth_prior = std::nullopt);
+  void AddPointProjectionObservationRaw(
+      Shot* shot, Point* point, const Vec2d& observation, double std_deviation,
+      const std::optional<map::Depth>& depth_prior);
 
   // Relative motion constraints
   void AddRelativeMotion(const RelativeMotion& rm);
@@ -275,11 +278,13 @@ class BundleAdjuster {
   geometry::Similarity GetBias(const std::string& id) const;
   Reconstruction GetReconstruction(const std::string& reconstruction_id) const;
   Point GetPoint(const std::string& id) const;
+  Point* GetPointRaw(const std::string& id);
   bool HasPoint(const std::string& id) const;
   RigCamera GetRigCamera(const std::string& rig_camera_id) const;
   RigInstance GetRigInstance(const std::string& instance_id) const;
   std::map<std::string, RigCamera> GetRigCameras() const;
   std::map<std::string, RigInstance> GetRigInstances() const;
+  Shot* GetShotRaw(const std::string& id);
 
   // Minimization details
   std::string BriefReport() const;
