@@ -28,7 +28,7 @@ from opensfm import (
     types,
 )
 from opensfm.align import align_reconstruction, apply_similarity
-from opensfm.context import current_memory_usage, parallel_map
+from opensfm import context
 from opensfm.dataset_base import DataSetBase
 
 
@@ -538,7 +538,7 @@ def reconstruction_from_relative_pose(
     )
 
     report["decision"] = "Success"
-    report["memory_usage"] = current_memory_usage()
+    report["memory_usage"] = context.current_memory_usage()
     return reconstruction, report
 
 
@@ -1442,6 +1442,9 @@ def grow_reconstruction(
     config = data.config
     report = {"steps": []}
 
+    initial_memory = context.log_memory("grow_reconstruction start")
+    report["initial_memory_usage"] = initial_memory
+
     camera_priors = data.load_camera_models()
     rig_camera_priors = data.load_rig_cameras()
 
@@ -1525,7 +1528,7 @@ def grow_reconstruction(
             step: Dict[str, Union[List[int], List[str], int, List[int], Any]] = {
                 "images": list(new_shots),
                 "resection": resrep,
-                "memory_usage": current_memory_usage(),
+                "memory_usage": context.current_memory_usage(),
             }
             report["steps"].append(step)
 
@@ -1613,6 +1616,13 @@ def grow_reconstruction(
         logger.info("Removed isolated: {}".format(isolated))
 
     paint_reconstruction(data, tracks_manager, reconstruction)
+    final_memory = context.log_memory("grow_reconstruction end")
+    report["final_memory_usage"] = final_memory
+    report["memory_delta"] = final_memory - initial_memory
+    logger.info(
+        f"[Memory] Total memory change during grow_reconstruction: "
+        f"{(final_memory - initial_memory) / 1024 / 1024:.1f} GB"
+    )
     return reconstruction, report
 
 

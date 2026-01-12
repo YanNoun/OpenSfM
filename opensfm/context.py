@@ -18,7 +18,8 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 abspath: str = os.path.dirname(os.path.realpath(__file__))
 SENSOR_DATA: str = os.path.join(abspath, "data", "sensor_data.json")
-CAMERA_CALIBRATION: str = os.path.join(abspath, "data", "camera_calibration.yaml")
+CAMERA_CALIBRATION: str = os.path.join(
+    abspath, "data", "camera_calibration.yaml")
 BOW_PATH: str = os.path.join(abspath, "data", "bow")
 
 
@@ -26,7 +27,8 @@ BOW_PATH: str = os.path.join(abspath, "data", "bow")
 OPENCV5: bool = int(cv2.__version__.split(".")[0]) >= 5
 OPENCV4: bool = int(cv2.__version__.split(".")[0]) >= 4
 OPENCV44: bool = (
-    int(cv2.__version__.split(".")[0]) == 4 and int(cv2.__version__.split(".")[1]) >= 4
+    int(cv2.__version__.split(".")[0]) == 4 and int(
+        cv2.__version__.split(".")[1]) >= 4
 )
 OPENCV3: bool = int(cv2.__version__.split(".")[0]) >= 3
 
@@ -61,7 +63,8 @@ def parallel_map(
             batch_size = (
                 min(batch_size, max_batch_size) if max_batch_size else batch_size
             )
-            res = Parallel(batch_size=batch_size)(delayed(func)(arg) for arg in args)
+            res = Parallel(batch_size=batch_size)(
+                delayed(func)(arg) for arg in args)
 
     cv2.setNumThreads(threads_used)
     return res
@@ -124,6 +127,14 @@ else:
 
     def current_memory_usage() -> int:
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * rusage_unit
+
+
+def log_memory(stage: str) -> int:
+    """Log memory usage at a given stage and return usage in KB."""
+    mem_kb = current_memory_usage()
+    mem_gb = mem_kb / 1024 / 1024 / 1024
+    logger.info(f"[Memory] {stage}: {mem_gb:.1f} GB")
+    return mem_kb
 
 
 def processes_that_fit_in_memory(desired: int, per_process: int) -> int:
