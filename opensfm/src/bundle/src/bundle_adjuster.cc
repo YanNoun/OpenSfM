@@ -1129,13 +1129,17 @@ void BundleAdjuster::Run() {
 // Activate NESDIS only for Ceres >= 2.2
 #if CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 2
 #ifdef CERES_NO_EIGEN_METIS
+  options.linear_solver_ordering_type = ceres::AMD;
+#else
   options.linear_solver_ordering_type = ceres::NESDIS;
 #endif  // CERES_NO_EIGEN_METIS
 #endif  // CERES_VERSION_MAJOR >= 2 && CERES_VERSION_MINOR >= 2
 
   ceres::Solve(options, &problem, &last_run_summary_);
 
-  if (compute_covariances_) {
+  std::cout << last_run_summary_.FullReport() << std::endl;
+
+    if (compute_covariances_) {
     ComputeCovariances(&problem);
   }
   if (compute_reprojection_errors_) {
