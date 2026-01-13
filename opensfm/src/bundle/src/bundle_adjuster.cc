@@ -618,14 +618,17 @@ void BundleAdjuster::Run() {
     // Lock parameters based on bitmask of parameters : only constant for now
     if (cam.GetParametersToOptimize().empty()) {
       problem.SetParameterBlockConstant(data.data());
-    }else if (i.second.GetValue().GetProjectionType() == geometry::ProjectionType::BROWN){
-        // Keep aspect ratio constant (BROWN only)
+    } else if (cam.GetValue().GetProjectionType() ==
+               geometry::ProjectionType::BROWN) {
+      // Keep aspect ratio constant (BROWN only)
 #if CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 2
-        ceres::SubsetManifold *subset_parameterization = new ceres::SubsetManifold(data.size(), { 6 });
-        problem.SetManifold(data.data(), subset_parameterization);
+      ceres::SubsetManifold* subset_parameterization =
+          new ceres::SubsetManifold(data.size(), {6});
+      problem.SetManifold(data.data(), subset_parameterization);
 #else
-        ceres::SubsetParameterization *subset_parameterization = new ceres::SubsetParameterization(data.size(), { 6 });
-        problem.SetParameterization(data.data(), subset_parameterization);
+      ceres::SubsetParameterization* subset_parameterization =
+          new ceres::SubsetParameterization(data.size(), {6});
+      problem.SetParameterization(data.data(), subset_parameterization);
 #endif
     }
 
@@ -1146,9 +1149,7 @@ void BundleAdjuster::Run() {
 
   ceres::Solve(options, &problem, &last_run_summary_);
 
-  std::cout << last_run_summary_.FullReport() << std::endl;
-
-    if (compute_covariances_) {
+  if (compute_covariances_) {
     ComputeCovariances(&problem);
   }
   if (compute_reprojection_errors_) {
