@@ -211,7 +211,7 @@ def td_errors(data: DataSetBase, tracks_manager, reconstructions):
             if len(ray_errors) > 0:
                 errors.append((np.max(np.array(ray_errors), axis=0)))
 
-    return _gps_gcp_errors_stats(errors)
+    return _gps_gcp_opk_errors_stats(errors, ["x", "y", "z"])
 
 
 def gps_errors(reconstructions: List[types.Reconstruction]) -> Dict[str, Any]:
@@ -317,7 +317,7 @@ def gcp_errors(
     with open(os.path.join(data.data_path, "stats", "ground_control_points.json"), 'w') as f:
         f.write(json.dumps(gcp_stats, indent=4))
     
-    return _gps_gcp_errors_stats(np.array(all_errors))
+    return _gps_gcp_opk_errors_stats(np.array(all_errors), ["x", "y", "z"])
 
 
 def _compute_errors(

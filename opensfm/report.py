@@ -14,10 +14,10 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 
 class Report:
-    def __init__(self, data: DataSet) -> None:
-        self.output_path: str = os.path.join(data.data_path, "stats")
-        self.dataset_name: str = os.path.basename(data.data_path)
-        self.io_handler: io.IoFilesystemBase = data.io_handler
+    def __init__(self, data: DataSet, stats = None) -> None:
+        self.output_path = os.path.join(data.data_path, "stats")
+        self.dataset_name = os.path.basename(data.data_path)
+        self.io_handler = data.io_handler
 
         self.mapi_light_light_green = [255, 255, 255]
         self.mapi_light_green = [0, 0, 0]
@@ -190,7 +190,7 @@ class Report:
             [
                 "Processing Time",
                 #f"{self.stats['processing_statistics']['steps_times']['Total Time']:.2f} seconds",
-                self.stats['odm_processing_statistics']['total_time_human'],
+                self.stats['odm_processing_statistics']['total_time_human'] if 'odm_processing_statistics' in self.stats else f"{self.stats['processing_statistics']['steps_times']['Total Time']:.2f} seconds",
             ],
             ["Capture Start", self.stats["processing_statistics"]["start_date"]],
             ["Capture End", self.stats["processing_statistics"]["end_date"]],
@@ -262,11 +262,12 @@ class Report:
                 ])
 
         # GSD (if available)
-        if self.stats['odm_processing_statistics'].get('average_gsd'):
-            rows.insert(3, [
-                "Average Ground Sampling Distance (GSD)",
-                f"{self.stats['odm_processing_statistics']['average_gsd']:.1f} cm"
-            ])
+        if 'odm_processing_statistics'  in self.stats:
+            if self.stats['odm_processing_statistics'].get('average_gsd'):
+                rows.insert(3, [
+                    "Average Ground Sampling Distance (GSD)",
+                    f"{self.stats['odm_processing_statistics']['average_gsd']:.1f} cm"
+                ])
         
         row_gps_gcp = [" / ".join(geo_string) + " errors"]
         geo_errors = []
@@ -724,6 +725,7 @@ class Report:
         else:
             self.make_align_details()
 
+        self.make_orientation_details()
         self.add_page_break()
 
         self.make_features_details()
