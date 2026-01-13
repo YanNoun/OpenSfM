@@ -41,7 +41,7 @@ else:
 
 
 # Parallel processes
-def parallel_map(func, args, num_proc: int, max_batch_size: int = 1):
+def parallel_map(func, args, num_proc: int, max_batch_size: int = 1, backend="threading"):
     """Run function for all arguments using multiple processes."""
     # De-activate/Restore any inner OpenCV threading
     threads_used = cv2.getNumThreads()

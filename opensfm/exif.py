@@ -4,9 +4,10 @@ import datetime
 import logging
 from codecs import encode, decode
 from bs4 import BeautifulSoup
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, BinaryIO, Callable, Union
 
 import exifread
+import math
 import numpy as np
 import xmltodict as x2d
 from opensfm import geometry, pygeometry

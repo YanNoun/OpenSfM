@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import itertools
 import logging
-from functools import lru_cache
 from typing import Callable, Dict, List, NamedTuple, Tuple
 
 import cv2
@@ -29,6 +28,7 @@ from opensfm import (
     types,
 )
 from opensfm.large.metadataset import MetaDataSet
+from opensfm.large.lru_cache import lru_cache
 
 logger: logging.Logger = logging.getLogger(__name__)
 

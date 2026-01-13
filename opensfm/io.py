@@ -1246,7 +1246,7 @@ def open_rt(path: str) -> TextIO:
 
 def imread(
     path: str, grayscale: bool = False, unchanged: bool = False, anydepth: bool = False
-) -> ndarray:
+) -> NDArray:
     _, ext = os.path.splitext(path)
     if ext.lower() == ".tiff" or ext.lower() == ".tif":
         return imread_rasterio(path, grayscale, unchanged, anydepth)
@@ -1527,6 +1527,10 @@ class IoFilesystemDefault(IoFilesystemBase):
             raise Exception("symlinks are not supported on win32")
         os.symlink(src_path, dst_path, **kwargs)
 
+    @classmethod
+    def open(cls, *args, **kwargs) -> IO[Any]:
+        return open(*args, **kwargs)
+    
     @classmethod
     def open_wb(cls, path: str) -> BinaryIO:
         return open(path, "wb")
