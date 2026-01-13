@@ -1,9 +1,11 @@
+# pyre-strict
+import argparse
+
 from opensfm import reconstruction
 from opensfm.actions import reconstruct
+from opensfm.dataset import DataSet
 
 from . import command
-import argparse
-from opensfm.dataset import DataSet
 
 
 class Command(command.CommandBase):

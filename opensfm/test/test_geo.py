@@ -1,3 +1,4 @@
+# pyre-strict
 import numpy as np
 from opensfm import geo, pygeo
 
@@ -6,7 +7,7 @@ def test_ecef_lla_consistency() -> None:
     lla_before = [46.5274109, 6.5722075, 402.16]
     ecef = geo.ecef_from_lla(lla_before[0], lla_before[1], lla_before[2])
     lla_after = geo.lla_from_ecef(ecef[0], ecef[1], ecef[2])
-    assert np.allclose(lla_after, lla_before)
+    assert np.allclose(np.array(lla_after), lla_before)
 
 
 def test_ecef_lla_topocentric_consistency() -> None:
@@ -18,7 +19,7 @@ def test_ecef_lla_topocentric_consistency() -> None:
     lla_after = geo.lla_from_topocentric(
         enu[0], enu[1], enu[2], lla_ref[0], lla_ref[1], lla_ref[2]
     )
-    assert np.allclose(lla_after, lla_before)
+    assert np.allclose(np.array(lla_after), lla_before)
 
 
 def test_ecef_lla_consistency_pygeo() -> None:
@@ -39,6 +40,22 @@ def test_ecef_lla_topocentric_consistency_pygeo() -> None:
     )
     assert np.allclose(lla_after, lla_before)
 
+
 def test_eq_geo() -> None:
-    assert geo.TopocentricConverter(40,30,0) == geo.TopocentricConverter(40,30,0)
-    assert geo.TopocentricConverter(40,32,0) != geo.TopocentricConverter(40,30,0)
+    assert geo.TopocentricConverter(40, 30, 0) == geo.TopocentricConverter(40, 30, 0)
+    assert geo.TopocentricConverter(40, 32, 0) != geo.TopocentricConverter(40, 30, 0)
+
+
+def test_parse_projection() -> None:
+    from opensfm import io
+    proj_str = io._parse_projection_string("WGS84")
+    assert proj_str is None
+
+    proj_str = io._parse_projection_string("WGS84 UTM 31N")
+    assert proj_str is not None
+
+    proj = geo.construct_proj_transformer(proj_str)
+    easting, northing = 431760, 4582313.7
+    lat, lon = 41.38946, 2.18378
+    plat, plon = proj.transform(easting, northing)
+    assert np.allclose((lat, lon), (plat, plon))

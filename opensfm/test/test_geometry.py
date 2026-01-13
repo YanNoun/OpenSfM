@@ -1,3 +1,4 @@
+# pyre-strict
 import numpy as np
 from opensfm import geometry
 

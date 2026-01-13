@@ -1,3 +1,4 @@
+# pyre-strict
 from opensfm import mesh
 from opensfm.dataset_base import DataSetBase
 

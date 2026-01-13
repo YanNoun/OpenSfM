@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.15)
 
 project(opensfm C CXX)
 
@@ -15,6 +15,10 @@ else()
 set(CMAKE_MODULE_PATH ${opensfm_SOURCE_DIR}/cmake)
 endif()
 
+cmake_policy(SET CMP0063 NEW)
+# Re-activate once we can have a decent version of CMake (> 3.27)
+# cmake_policy(SET CMP0148 NEW)
+
 if (WIN32)
 # Place compilation results in opensfm/ folder, not in Debug/ or Release/
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY_RELEASE "${opensfm_SOURCE_DIR}/..")
@@ -23,28 +27,33 @@ endif()
 
 ####### Compilation Options #######
 # Visibility stuff
-cmake_policy(SET CMP0063 NEW)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 set(CMAKE_CXX_VISIBILITY_INLINES ON)
 
 # fPIC
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# C++14
+# C++17
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Enable all warnings
 if (NOT WIN32)
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wall -Wextra -Wno-sign-compare")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wno-sign-compare")
 endif()
 
 # For compiling VLFeat
 add_definitions(-DVL_DISABLE_AVX)
 
+# We're not using an inplace Glog
+add_definitions(-DGLOG_USE_GLOG_EXPORT)
+
 # Use the version of vlfeat in ./src/third_party/vlfeat
 add_definitions(-DINPLACE_VLFEAT)
+if(NOT USE_SSE2)
+  add_definitions(-DVL_DISABLE_SSE2)
+endif()
 
 if (WIN32)
     # Missing math constant
@@ -68,17 +77,59 @@ endif()
 find_package(LAPACK)
 find_package(SuiteSparse)
 find_package(Eigen3 REQUIRED)
-find_package(Ceres REQUIRED)
-find_package(Gflags)
+find_package(Ceres)
+find_package(Gflags REQUIRED)
 
-find_package(OpenCV)
-# OpenCV's OpenCVConfig will enforce imgcodecs for < 3.0
-# (even if OPTIONAL_COMPONENTS) so we remove it as we don't need it
-# Cause is imread/imwrite moved to imgcodecs on > 3.0
-if(${OpenCV_VERSION} LESS 3.0)
-    find_package(OpenCV REQUIRED core imgproc calib3d)
+find_library(TCMALLOC_LIBRARY tcmalloc)
+if(TCMALLOC_LIBRARY)
+    message(STATUS "Found tcmalloc: ${TCMALLOC_LIBRARY}")
+    link_libraries(${TCMALLOC_LIBRARY})
 else()
-    find_package(OpenCV REQUIRED core imgproc calib3d OPTIONAL_COMPONENTS imgcodecs)
+    message(WARNING "tcmalloc not found. Please install gperftools.")
+endif()
+
+# Try to find glog using its native CMake config first (modern systems)
+# Fall back to custom FindGlog.cmake for older systems (e.g., Ubuntu 20.04)
+find_package(glog QUIET CONFIG)
+if(glog_FOUND)
+  message(STATUS "Using glog native CMake config (modern glog)")
+else()
+  message(STATUS
+    "glog CMake config not found, using FindGlog.cmake "
+    "(Ubuntu 20.04 compatibility)"
+  )
+  find_package(Glog REQUIRED)
+endif()
+
+# Ceres2 exposes Ceres::ceres target.
+# Ceres1 exposes just ceres.
+# - if there's no such target, cmake will convert it into -lceres
+# and the linker will fail
+if(Ceres_ceres_FOUND)
+    set(CERES_LIBRARIES Ceres::ceres)
+else()
+    set(CERES_LIBRARIES ceres)
+endif()
+
+# Only link against the OpenCV components we actually need
+# This avoids pulling in unnecessary dependencies like viz (which requires VTK)
+# OpenCV's OpenCVConfig will enforce imgcodecs for < 3.0
+# (even if OPTIONAL_COMPONENTS) so we handle version detection carefully
+# Cause is imread/imwrite moved to imgcodecs on > 3.0
+find_package(OpenCV QUIET)
+if(OpenCV_FOUND AND ${OpenCV_VERSION} VERSION_LESS "3.0")
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d)
+else()
+    find_package(OpenCV REQUIRED COMPONENTS core imgproc calib3d
+                 OPTIONAL_COMPONENTS imgcodecs)
+endif()
+
+# Override OpenCV_LIBS to only include the components we explicitly requested
+# This prevents linking against all OpenCV modules
+# (especially viz which requires VTK)
+set(OpenCV_LIBS opencv_core opencv_imgproc opencv_calib3d)
+if(TARGET opencv_imgcodecs)
+    list(APPEND OpenCV_LIBS opencv_imgcodecs)
 endif()
 
 ####### Third party libraries #######
@@ -108,16 +159,23 @@ if (OPENSFM_BUILD_TESTS)
   include_directories(third_party/gtest)
   add_definitions(-DCERES_GFLAGS_NAMESPACE=${GFLAGS_NAMESPACE})
 
+  # Gtest if old now and trigger these
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-field-initializers")
+  set(CMAKE_CXX_FLAGS
+      "${CMAKE_CXX_FLAGS} -Wno-deprecated-copy-with-user-provided-copy"
+  )
+
   add_library(gtest
               third_party/gtest/gmock_gtest_all.cc
               third_party/gtest/gmock_main.cc)
   target_include_directories(gtest PRIVATE ${GFLAGS_INCLUDE_DIR})
+  target_link_libraries(gtest PRIVATE glog::glog)
 
   set(TEST_MAIN test_main)
   add_library(${TEST_MAIN} testing_main.cc)
   target_link_libraries(${TEST_MAIN}
                         ${GFLAGS_LIBRARY}
-                        ${GLOG_LIBRARY}
+                        glog::glog
                         gtest)
 endif()
 

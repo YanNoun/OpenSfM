@@ -1,9 +1,13 @@
-import opensfm.reconstruction as orec
-from opensfm.dataset_base import DataSetBase
+# pyre-strict
 from typing import Optional
 
+import opensfm.reconstruction as orec
+from opensfm.dataset_base import DataSetBase
 
-def run_dataset(dataset: DataSetBase, input: Optional[str], output: Optional[str]) -> None:
+
+def run_dataset(
+    dataset: DataSetBase, input: Optional[str], output: Optional[str]
+) -> None:
     """Bundle a reconstructions.
 
     Args:
@@ -23,6 +27,6 @@ def run_dataset(dataset: DataSetBase, input: Optional[str], output: Optional[str
         reconstruction.add_correspondences_from_tracks_manager(tracks_manager)
         gcp = dataset.load_ground_control_points()
         orec.bundle(
-            reconstruction, camera_priors, rig_cameras_priors, gcp, dataset.config
+            reconstruction, camera_priors, rig_cameras_priors, gcp, 0, dataset.config
         )
     dataset.save_reconstruction(reconstructions, output)

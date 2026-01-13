@@ -11,8 +11,9 @@
 !doc
 !LICENSE
 !opensfm
+!pyproject.toml
+!conda.yml
 !README.md
-!requirements.txt
 !setup.cfg
 !setup.py
 !viewer

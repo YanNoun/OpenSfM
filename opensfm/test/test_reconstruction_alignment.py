@@ -1,18 +1,23 @@
+# pyre-strict
 import numpy as np
-from opensfm import pybundle
-from opensfm import pygeometry
+from numpy.typing import NDArray
+from opensfm import pybundle, pygeometry
 
 
-def get_shot_origin(shot) -> np.ndarray:
+def get_shot_origin(shot: pybundle.RAShot) -> NDArray:
     """Compute the origin of a shot."""
-    pose = pygeometry.Pose([shot.rx, shot.ry, shot.rz], [shot.tx, shot.ty, shot.tz])
+    pose = pygeometry.Pose(
+        np.array([shot.rx, shot.ry, shot.rz]), np.array([shot.tx, shot.ty, shot.tz])
+    )
     return pose.get_origin()
 
 
-def get_reconstruction_origin(r) -> np.ndarray:
+def get_reconstruction_origin(r: pybundle.RAReconstruction) -> NDArray:
     """Compute the origin of a reconstruction."""
     s = r.scale
-    pose = pygeometry.Pose(np.array([r.rx, r.ry, r.rz]), np.array([r.tx / s, r.ty / s, r.tz / s]))
+    pose = pygeometry.Pose(
+        np.array([r.rx, r.ry, r.rz]), np.array([r.tx / s, r.ty / s, r.tz / s])
+    )
     return pose.get_origin()
 
 

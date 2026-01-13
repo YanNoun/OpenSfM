@@ -1,18 +1,21 @@
+# pyre-strict
 import copy
+from typing import List, Tuple
 
 import numpy as np
-from opensfm import multiview
-from opensfm import pygeometry
-from opensfm import transformations as tf
+from numpy.typing import NDArray
+from opensfm import multiview, pygeometry, transformations as tf
 
 
-def normalized(x: np.ndarray) -> np.ndarray:
+def normalized(x: NDArray) -> NDArray:
     return x / np.linalg.norm(x)
 
 
 def test_motion_from_plane_homography() -> None:
     R = tf.random_rotation_matrix()[:3, :3]
+    # pyre-fixme[6]: For 1st argument expected `ndarray` but got `int`.
     t = normalized(2 * np.random.rand(3) - 1)
+    # pyre-fixme[6]: For 1st argument expected `ndarray` but got `int`.
     n = normalized(2 * np.random.rand(3) - 1)
     d = 2 * np.random.rand() - 1
     scale = 2 * np.random.rand() - 1
@@ -33,10 +36,11 @@ def test_motion_from_plane_homography() -> None:
     assert any(goodness)
 
 
-def test_essential_five_points(pairs_and_their_E) -> None:
+def test_essential_five_points(
+    pairs_and_their_E: List[Tuple[NDArray, NDArray, NDArray, pygeometry.Pose]],
+) -> None:
     exact_found = 0
     for f1, f2, E, _ in pairs_and_their_E:
-
         result = pygeometry.essential_five_points(f1[0:5, :], f2[0:5, :])
 
         # run over the N solutions, looking for the exact one
@@ -52,7 +56,9 @@ def test_essential_five_points(pairs_and_their_E) -> None:
     assert exact_found >= exacts
 
 
-def test_absolute_pose_three_points(shots_and_their_points) -> None:
+def test_absolute_pose_three_points(
+    shots_and_their_points: List[Tuple[pygeometry.Pose, NDArray, NDArray]],
+) -> None:
     exact_found = 0
     for pose, bearings, points in shots_and_their_points:
         result = pygeometry.absolute_pose_three_points(bearings, points)
@@ -65,7 +71,9 @@ def test_absolute_pose_three_points(shots_and_their_points) -> None:
     assert exact_found >= exacts
 
 
-def test_absolute_pose_n_points(shots_and_their_points) -> None:
+def test_absolute_pose_n_points(
+    shots_and_their_points: List[Tuple[pygeometry.Pose, NDArray, NDArray]],
+) -> None:
     for pose, bearings, points in shots_and_their_points:
         result = pygeometry.absolute_pose_n_points(bearings, points)
 
@@ -73,7 +81,9 @@ def test_absolute_pose_n_points(shots_and_their_points) -> None:
         assert np.linalg.norm(expected - result, ord="fro") < 1e-5
 
 
-def test_absolute_pose_n_points_known_rotation(shots_and_their_points) -> None:
+def test_absolute_pose_n_points_known_rotation(
+    shots_and_their_points: List[Tuple[pygeometry.Pose, NDArray, NDArray]],
+) -> None:
     for pose, bearings, points in shots_and_their_points:
         R = pose.get_rotation_matrix()
         p_rotated = np.array([R.dot(p) for p in points])
@@ -82,9 +92,10 @@ def test_absolute_pose_n_points_known_rotation(shots_and_their_points) -> None:
         assert np.linalg.norm(pose.translation - result) < 1e-6
 
 
-def test_essential_n_points(pairs_and_their_E) -> None:
+def test_essential_n_points(
+    pairs_and_their_E: List[Tuple[NDArray, NDArray, NDArray, NDArray]],
+) -> None:
     for f1, f2, E, _ in pairs_and_their_E:
-
         f1 /= np.linalg.norm(f1, axis=1)[:, None]
         f2 /= np.linalg.norm(f2, axis=1)[:, None]
 
@@ -98,9 +109,10 @@ def test_essential_n_points(pairs_and_their_E) -> None:
         assert np.linalg.norm(E - E_found, ord="fro") < 1e-6
 
 
-def test_relative_pose_from_essential(pairs_and_their_E) -> None:
+def test_relative_pose_from_essential(
+    pairs_and_their_E: List[Tuple[NDArray, NDArray, NDArray, pygeometry.Pose]],
+) -> None:
     for f1, f2, E, pose in pairs_and_their_E:
-
         result = pygeometry.relative_pose_from_essential(E, f1, f2)
 
         pose = copy.deepcopy(pose)
@@ -110,9 +122,10 @@ def test_relative_pose_from_essential(pairs_and_their_E) -> None:
         assert np.allclose(expected, result, rtol=1e-10)
 
 
-def test_relative_rotation(pairs_and_their_E) -> None:
+def test_relative_rotation(
+    pairs_and_their_E: List[Tuple[NDArray, NDArray, NDArray, pygeometry.Pose]],
+) -> None:
     for f1, _, _, _ in pairs_and_their_E:
-
         vec_x = np.random.rand(3)
         vec_x /= np.linalg.norm(vec_x)
         vec_y = np.array([-vec_x[1], vec_x[0], 0.0])
@@ -129,7 +142,9 @@ def test_relative_rotation(pairs_and_their_E) -> None:
         assert np.allclose(rotation, result, rtol=1e-10)
 
 
-def test_relative_pose_refinement(pairs_and_their_E) -> None:
+def test_relative_pose_refinement(
+    pairs_and_their_E: List[Tuple[NDArray, NDArray, NDArray, pygeometry.Pose]],
+) -> None:
     exact_found = 0
     for f1, f2, _, pose in pairs_and_their_E:
         pose = copy.deepcopy(pose)

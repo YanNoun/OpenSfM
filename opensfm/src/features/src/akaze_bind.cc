@@ -9,8 +9,7 @@ namespace features {
 py::tuple akaze(foundation::pyarray_uint8 image, AKAZEOptions options) {
   py::gil_scoped_release release;
 
-  const cv::Mat img(image.shape(0), image.shape(1), CV_8U,
-                    (void *)image.data());
+  const cv::Mat img(image.shape(0), image.shape(1), CV_8U, (void*)image.data());
 
   cv::Mat img_32;
   img.convertTo(img_32, CV_32F, 1.0 / 255.0, 0);
@@ -48,10 +47,10 @@ py::tuple akaze(foundation::pyarray_uint8 image, AKAZEOptions options) {
   if (options.descriptor == MLDB_UPRIGHT || options.descriptor == MLDB) {
     return py::make_tuple(
         keys_py, foundation::py_array_from_data(desc.ptr<unsigned char>(0),
-                                             desc.rows, desc.cols));
+                                                desc.rows, desc.cols));
   }
   return py::make_tuple(keys_py, foundation::py_array_from_data(
-                                  desc.ptr<float>(0), desc.rows, desc.cols));
+                                     desc.ptr<float>(0), desc.rows, desc.cols));
 }
 
 }  // namespace features

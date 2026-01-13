@@ -5,10 +5,9 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <sfm/ba_helpers.h>
+#include <sfm/map_helpers.h>
 #include <sfm/retriangulation.h>
 #include <sfm/tracks_helpers.h>
-
-#include <optional>
 
 PYBIND11_MODULE(pysfm, m) {
   py::module::import("opensfm.pymap");
@@ -18,7 +17,13 @@ PYBIND11_MODULE(pysfm, m) {
   m.def("count_tracks_per_shot", &sfm::tracks_helpers::CountTracksPerShot);
   m.def("add_connections", &sfm::tracks_helpers::AddConnections,
         py::call_guard<py::gil_scoped_release>());
-  m.def("remove_connections", &sfm::tracks_helpers::RemoveConnections,
+  m.def("filter_badly_conditioned_points",
+        &sfm::map_helpers::FilterBadlyConditionedPoints, py::arg("map"),
+        py::arg("min_angle_deg") = 1.0, py::arg("min_abs_det") = 1e-15,
+        py::call_guard<py::gil_scoped_release>());
+
+  m.def("remove_isolated_points", &sfm::map_helpers::RemoveIsolatedPoints,
+        py::arg("map"), py::arg("k") = 7,
         py::call_guard<py::gil_scoped_release>());
 
   py::class_<sfm::BAHelpers>(m, "BAHelpers")
@@ -32,5 +37,10 @@ PYBIND11_MODULE(pysfm, m) {
       .def_static("add_gcp_to_bundle", &sfm::BAHelpers::AddGCPToBundle);
 
   m.def("realign_maps", &sfm::retriangulation::RealignMaps,
+        py::call_guard<py::gil_scoped_release>());
+
+  m.def("reconstruct_from_tracks_manager",
+        &sfm::retriangulation::ReconstructFromTracksManager, py::arg("map"),
+        py::arg("tracks_manager"), py::arg("config"),
         py::call_guard<py::gil_scoped_release>());
 }

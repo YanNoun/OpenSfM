@@ -1,21 +1,21 @@
+# pyre-strict
 import datetime
 import os
-from subprocess import Popen, PIPE
-from typing import List
+from subprocess import PIPE, Popen
+from typing import List, Optional
 
 import cv2
 import dateutil.parser
-from opensfm import context
-from opensfm import geotag_from_gpx
-from opensfm import io
+from opensfm import context, geotag_from_gpx, io
 
 
-def video_orientation(video_file) -> int:
+def video_orientation(video_file: str) -> int:
     # Rotation
-    # pyre-fixme[16]: Optional type has no attribute `read`.
-    rotation = Popen(
-        ["exiftool", "-Rotation", "-b", video_file], stdout=PIPE
-    ).stdout.read()
+    process = Popen(["exiftool", "-Rotation", "-b", video_file], stdout=PIPE)
+    assert (
+        process.stdout is not None
+    ), "stdout should not be None when stdout=PIPE is specified"
+    rotation = process.stdout.read().decode("utf-8").strip()
     if rotation:
         rotation = float(rotation)
         if rotation == 0:
@@ -34,16 +34,14 @@ def video_orientation(video_file) -> int:
 
 
 def import_video_with_gpx(
-    video_file,
-    gpx_file,
+    video_file: str,
+    gpx_file: str,
     output_path: str,
     dx: float,
-    dt=None,
-    start_time=None,
+    dt: Optional[float] = None,
+    start_time: Optional[str] = None,
     visual: bool = False,
-    image_description=None,
 ) -> List[str]:
-
     points = geotag_from_gpx.get_lat_lon_time(gpx_file)
 
     orientation = video_orientation(video_file)
@@ -52,10 +50,11 @@ def import_video_with_gpx(
         video_start_time = dateutil.parser.parse(start_time)
     else:
         try:
-            # pyre-fixme[16]: Optional type has no attribute `read`.
-            exifdate = Popen(
-                ["exiftool", "-CreateDate", "-b", video_file], stdout=PIPE
-            ).stdout.read()
+            process = Popen(["exiftool", "-CreateDate", "-b", video_file], stdout=PIPE)
+            assert (
+                process.stdout is not None
+            ), "stdout should not be None when stdout=PIPE is specified"
+            exifdate = process.stdout.read().decode("utf-8").strip()
             video_start_time = datetime.datetime.strptime(exifdate, "%Y:%m:%d %H:%M:%S")
         except Exception:
             print("Video recording timestamp not found. Using first GPS point time.")

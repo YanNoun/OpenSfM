@@ -1,11 +1,11 @@
+# pyre-strict
 import os
 
-from opensfm import dataset
-from opensfm import dense
+from opensfm import dataset, dense
 from opensfm.dataset import DataSet
 
 
-def run_dataset(data: DataSet, subfolder, interactive) -> None:
+def run_dataset(data: DataSet, subfolder: str, interactive: bool) -> None:
     """Compute depthmap on a dataset with has SfM ran already.
 
     Args:
@@ -16,7 +16,7 @@ def run_dataset(data: DataSet, subfolder, interactive) -> None:
 
     udata_path = os.path.join(data.data_path, subfolder)
     udataset = dataset.UndistortedDataSet(data, udata_path, io_handler=data.io_handler)
-    data.config["interactive"] = interactive
+    udataset.config["interactive"] = interactive
     reconstructions = udataset.load_undistorted_reconstruction()
     tracks_manager = udataset.load_undistorted_tracks_manager()
     dense.compute_depthmaps(udataset, tracks_manager, reconstructions[0])

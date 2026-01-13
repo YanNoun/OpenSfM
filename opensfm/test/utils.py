@@ -1,10 +1,13 @@
 # Test utils for python
+
+# pyre-strict
 import numpy as np
 from opensfm import pygeo, pygeometry, pymap
 
 
 def assert_cameras_equal(cam1: pygeometry.Camera, cam2: pygeometry.Camera) -> None:
-    assert np.allclose(cam1.get_parameters_values(), cam2.get_parameters_values())
+    assert np.allclose(cam1.get_parameters_values(),
+                       cam2.get_parameters_values())
     assert cam1.projection_type == cam2.projection_type
     assert cam1.width == cam2.width
     assert cam1.height == cam2.height
@@ -62,7 +65,8 @@ def assert_shots_equal(
     assert np.allclose(shot1.pose.get_Rt(), shot2.pose.get_Rt(), 1e-5)
     assert shot1.merge_cc == shot2.merge_cc
     assert np.allclose(shot1.covariance, shot2.covariance)
-    assert_metadata_equal(shot1.metadata, shot2.metadata, test_mapillary_specific)
+    assert_metadata_equal(shot1.metadata, shot2.metadata,
+                          test_mapillary_specific)
 
 
 def assert_bias_equal(
@@ -110,7 +114,8 @@ def assert_maps_equal(
 
     # Pano shots are different objects of same value
     for shot_id in map1.get_pano_shots():
-        shot1, shot2 = map1.get_pano_shots()[shot_id], map2.get_pano_shots()[shot_id]
+        shot1, shot2 = map1.get_pano_shots()[shot_id], map2.get_pano_shots()[
+            shot_id]
         assert shot1 is not shot2
         assert_shots_equal(shot1, shot2, test_mapillary_specific)
 
@@ -126,10 +131,10 @@ def assert_maps_equal(
         assert len(obs) == len(obs_cpy)
 
         # Observations are different objects of same value
-        for shot, obs_id in obs.items():
-            obs1 = shot.get_observation(obs_id)
+        for shot, obs in obs.items():
+            obs1 = shot.get_observation(obs.id)
             shot_cpy = map2.get_shots()[shot.id]
-            obs_cpy = shot_cpy.get_observation(obs_id)
+            obs_cpy = shot_cpy.get_observation(obs.id)
             assert obs1 is not obs_cpy
 
     # Topocentric reference are different objects of same value

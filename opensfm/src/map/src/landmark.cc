@@ -24,14 +24,22 @@ FeatureId Landmark::GetObservationIdInShot(Shot* shot) const {
   if (obs_it == observations_.end()) {
     throw std::runtime_error("Accessing with invalid shot ptr!");
   }
-  return observations_.at(shot);
+  return observations_.at(shot)->feature_id;
 }
 
-void Landmark::AddObservation(Shot* shot, const FeatureId& feat_id) {
-  observations_.emplace(shot, feat_id);
+const Observation& Landmark::GetObservationInShot(Shot* shot) const {
+  auto obs_it = observations_.find(shot);
+  if (obs_it == observations_.end()) {
+    throw std::runtime_error("Accessing with invalid shot ptr!");
+  }
+  return *observations_.at(shot);
 }
-const std::map<Shot*, FeatureId, KeyCompare>& Landmark::GetObservations()
-    const {
+
+void Landmark::AddObservation(Shot* shot, const Observation* observation) {
+  observations_[shot] = observation;
+}
+const std::map<Shot*, const Observation*, KeyCompare>&
+Landmark::GetObservations() const {
   return observations_;
 }
 

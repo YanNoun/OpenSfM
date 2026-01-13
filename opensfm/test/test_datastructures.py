@@ -1,29 +1,29 @@
+# pyre-strict
 import copy
-from opensfm.pymap import RigCamera, RigInstance, Shot
-from opensfm.types import Reconstruction
-from typing import Tuple
 
 import random
+from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
 import pytest
-from opensfm import pygeometry
-from opensfm import pymap
-from opensfm import types
+from opensfm import pygeometry, pymap, types
+from opensfm.pymap import RigCamera, RigInstance, Shot
 from opensfm.test.utils import (
-    assert_maps_equal, assert_metadata_equal,
     assert_cameras_equal,
+    assert_maps_equal,
+    assert_metadata_equal,
     assert_shots_equal,
 )
+from opensfm.types import Reconstruction
 
 
 def _create_reconstruction(
-    n_cameras: int=0,
-    n_shots_cam=None,
-    n_pano_shots_cam=None,
-    n_points: int=0,
-    dist_to_shots: bool=False,
-    dist_to_pano_shots: bool=False,
+    n_cameras: int = 0,
+    n_shots_cam: Optional[Dict[str, int]] = None,
+    n_pano_shots_cam: Optional[Dict[str, int]] = None,
+    n_points: int = 0,
+    dist_to_shots: bool = False,
+    dist_to_pano_shots: bool = False,
 ) -> types.Reconstruction:
     """Creates a reconstruction with n_cameras random cameras and
     shots, where n_shots_cam is a dictionary, containing the
@@ -127,7 +127,7 @@ def test_camera_iterators() -> None:
     visited_cams = set()
     for cam in rec.cameras.values():
         visited_cams.add(cam.id)
-        focal = np.random.rand(1)
+        focal = np.random.rand(1).item()
         cam.focal = focal
         assert rec.cameras[cam.id].focal == focal
         assert cam is rec.cameras[cam.id]
@@ -140,13 +140,15 @@ def test_camera_iterators() -> None:
 
     for cam_id, cam in rec.cameras.items():
         assert cam_id == cam.id
-        focal = np.random.rand(1)
+        focal = np.random.rand(1).item()
         cam.focal = focal
         assert rec.cameras[cam.id].focal == focal
         assert cam is rec.cameras[cam.id]
 
 
-def _check_common_cam_properties(cam1, cam2) -> None:
+def _check_common_cam_properties(
+    cam1: pygeometry.Camera, cam2: pygeometry.Camera
+) -> None:
     assert cam1.id == cam2.id
     assert cam1.width == cam2.width
     assert cam1.height == cam2.height
@@ -253,7 +255,9 @@ def test_fisheye624_camera() -> None:
     focal = 0.6
     aspect_ratio = 0.7
     ppoint = np.array([0.51, 0.52])
-    dist = np.array([-0.1, 0.09, 0.08, 0.01, 0.02, 0.05, 0.1, 0.2, 0.01, -0.003, 0.005, -0.007])  # [k1-k6, p1, p2, s0-s3]
+    dist = np.array(
+        [-0.1, 0.09, 0.08, 0.01, 0.02, 0.05, 0.1, 0.2, 0.01, -0.003, 0.005, -0.007]
+    )  # [k1-k6, p1, p2, s0-s3]
     cam_cpp = pygeometry.Camera.create_fisheye624(focal, aspect_ratio, ppoint, dist)
     cam_cpp.width = 800
     cam_cpp.height = 600
@@ -325,7 +329,9 @@ def test_spherical_camera() -> None:
 
 
 # Test Metadata
-def _help_measurement_test(measurement, attr, val) -> None:
+def _help_measurement_test(
+    measurement: object, attr: str, val: Union[float, str]
+) -> None:
     # Test metadata's has_value properties
     assert getattr(measurement, attr).has_value is False
     getattr(measurement, attr).value = val
@@ -343,25 +349,25 @@ def _help_measurement_test(measurement, attr, val) -> None:
 def test_shot_measurement_setter_and_getter() -> None:
     m1 = pymap.ShotMeasurements()
     # Test basic functionality
-    _help_measurement_test(m1, "capture_time", np.random.rand(1))
+    _help_measurement_test(m1, "capture_time", np.random.rand(1).item())
     _help_measurement_test(m1, "gps_position", np.random.rand(3))
-    _help_measurement_test(m1, "gps_accuracy", np.random.rand(1))
-    _help_measurement_test(m1, "compass_accuracy", np.random.rand(1))
-    _help_measurement_test(m1, "compass_angle", np.random.rand(1))
-    _help_measurement_test(m1, "opk_accuracy", np.random.rand(1))
+    _help_measurement_test(m1, "gps_accuracy", np.random.rand(1).item())
+    _help_measurement_test(m1, "compass_accuracy", np.random.rand(1).item())
+    _help_measurement_test(m1, "compass_angle", np.random.rand(1).item())
+    _help_measurement_test(m1, "opk_accuracy", np.random.rand(1).item())
     _help_measurement_test(m1, "opk_angles", np.random.rand(3))
     _help_measurement_test(m1, "gravity_down", np.random.rand(3))
     _help_measurement_test(m1, "orientation", random.randint(0, 100))
     _help_measurement_test(m1, "sequence_key", "key_test")
 
 
-def _helper_populate_metadata(m) -> None:
-    m.capture_time.value = np.random.rand(1)
+def _helper_populate_metadata(m: pymap.ShotMeasurements) -> None:
+    m.capture_time.value = np.random.rand(1).item()
     m.gps_position.value = np.random.rand(3)
-    m.gps_accuracy.value = np.random.rand(1)
-    m.compass_accuracy.value = np.random.rand(1)
-    m.compass_angle.value = np.random.rand(1)
-    m.opk_accuracy.value = np.random.rand(1)
+    m.gps_accuracy.value = np.random.rand(1).item()
+    m.compass_accuracy.value = np.random.rand(1).item()
+    m.compass_angle.value = np.random.rand(1).item()
+    m.opk_accuracy.value = np.random.rand(1).item()
     m.opk_angles.value = np.random.rand(3)
     m.gravity_down.value = np.random.rand(3)
     m.orientation.value = random.randint(0, 100)
@@ -967,7 +973,7 @@ def test_many_observations_delete() -> None:
         m.create_rig_camera(pymap.RigCamera(pygeometry.Pose(), cam.id))
 
     for shot_id in range(n_shots):
-        cam_id = "cam" + str(int(np.random.rand(1) * 10 % n_cams))
+        cam_id = "cam" + str(int(np.random.rand(1).item() * 10 % n_cams))
         shot_id = str(shot_id)
         m.create_rig_instance(shot_id)
         m.create_shot(shot_id, cam_id, cam_id, shot_id, pygeometry.Pose())
@@ -1007,7 +1013,7 @@ def test_clean_landmarks_with_min_observations() -> None:
         m.create_rig_camera(pymap.RigCamera(pygeometry.Pose(), cam.id))
 
     for shot_id in range(n_shots):
-        cam_id = "cam" + str(int(np.random.rand(1) * 10 % n_cams))
+        cam_id = "cam" + str(int(np.random.rand(1).item() * 10 % n_cams))
         m.create_rig_instance(str(shot_id))
         m.create_shot(str(shot_id), cam_id, cam_id, str(shot_id), pygeometry.Pose())
 
@@ -1103,6 +1109,7 @@ def test_rec_deepcopy() -> None:
     assert len(rec2.points) == 200
 
     assert_maps_equal(rec.map, rec2.map)
+
 
 def test_gcp() -> None:
     gcp = []

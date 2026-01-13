@@ -1,11 +1,15 @@
+# pyre-strict
 import os
+from typing import List
 
 import numpy as np
-from opensfm import io
+from opensfm import io, pymap, types
 from opensfm.dataset import DataSet
 
 
-def run_dataset(data: DataSet, list_path, bundle_path, undistorted) -> None:
+def run_dataset(
+    data: DataSet, list_path: str, bundle_path: str, undistorted: bool
+) -> None:
     """Export reconstruction to bundler format.
 
     Args:
@@ -36,7 +40,11 @@ def run_dataset(data: DataSet, list_path, bundle_path, undistorted) -> None:
 
 
 def export_bundler(
-    image_list, reconstructions, track_manager, bundle_file_path: str, list_file_path: str
+    image_list: List[str],
+    reconstructions: List[types.Reconstruction],
+    track_manager: pymap.TracksManager,
+    bundle_file_path: str,
+    list_file_path: str,
 ) -> None:
     """
     Generate a reconstruction file that is consistent with Bundler's format

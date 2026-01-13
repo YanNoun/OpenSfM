@@ -50,7 +50,7 @@ std::vector<std::vector<UnionFindElement<T>*>> GetUnionFindClusters(
 
   std::vector<std::vector<UnionFindElement<T>*>> clusters;
   clusters.reserve(aggregations.size());
-  for (const auto agg : aggregations) {
+  for (const auto& agg : aggregations) {
     clusters.emplace_back(agg.second);
   }
 

@@ -1,13 +1,14 @@
+# pyre-strict
 import math
-import random
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 from opensfm import pygeometry, pymap, pyrobust, transformations as tf
 
 
-def nullspace(A: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def nullspace(A: NDArray) -> Tuple[NDArray, NDArray]:
     """Compute the null space of A.
 
     Return the smallest singular value and the corresponding vector.
@@ -16,29 +17,29 @@ def nullspace(A: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return s[-1], vh[-1]
 
 
-def homogeneous(x: np.ndarray) -> np.ndarray:
+def homogeneous(x: NDArray) -> NDArray:
     """Add a column of ones to x."""
     s = x.shape[:-1] + (1,)
     return np.hstack((x, np.ones(s)))
 
 
-def homogeneous_vec(x: np.ndarray) -> np.ndarray:
+def homogeneous_vec(x: NDArray) -> NDArray:
     """Add a column of zeros to x."""
     s = x.shape[:-1] + (1,)
     return np.hstack((x, np.zeros(s)))
 
 
-def euclidean(x: np.ndarray) -> np.ndarray:
+def euclidean(x: NDArray) -> NDArray:
     """Divide by last column and drop it."""
     return x[..., :-1] / x[..., -1:]
 
 
-def cross_product_matrix(x: np.ndarray) -> np.ndarray:
+def cross_product_matrix(x: NDArray) -> NDArray:
     """Return the matrix representation of x's cross product"""
     return np.array([[0, -x[2], x[1]], [x[2], 0, -x[0]], [-x[1], x[0], 0]])
 
 
-def P_from_KRt(K: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
+def P_from_KRt(K: NDArray, R: NDArray, t: NDArray) -> NDArray:
     """P = K[R|t]."""
     P = np.empty((3, 4))
     P[:, :3] = np.dot(K, R)
@@ -46,7 +47,7 @@ def P_from_KRt(K: np.ndarray, R: np.ndarray, t: np.ndarray) -> np.ndarray:
     return P
 
 
-def KRt_from_P(P: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+def KRt_from_P(P: NDArray) -> Tuple[NDArray, NDArray, NDArray]:
     """Factorize the camera matrix into K,R,t as P = K[R|t].
 
     >>> K = np.array([[1, 2, 3],
@@ -79,7 +80,7 @@ def KRt_from_P(P: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     return K, R, t
 
 
-def rq(A: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+def rq(A: NDArray) -> Tuple[NDArray, NDArray]:
     """Decompose a matrix into a triangular times rotation.
     (from PCV)
 
@@ -103,7 +104,7 @@ def rq(A: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return R[:, ::-1], Q[::-1, :]
 
 
-def vector_angle(u: np.ndarray, v: np.ndarray) -> float:
+def vector_angle(u: NDArray, v: NDArray) -> float:
     """Angle between two vectors.
 
     >>> u = [ 0.99500417, -0.33333333, -0.09983342]
@@ -119,8 +120,8 @@ def vector_angle(u: np.ndarray, v: np.ndarray) -> float:
 
 
 def decompose_similarity_transform(
-    T: np.ndarray,
-) -> Tuple[float, np.ndarray, np.ndarray]:
+    T: NDArray,
+) -> Tuple[float, NDArray, NDArray]:
     """Decompose the similarity transform to scale, rotation and translation"""
     m, n = T.shape[0:2]
     assert m == n
@@ -129,180 +130,9 @@ def decompose_similarity_transform(
     return s, A / s, b
 
 
-def ransac_max_iterations(
-    kernel: Any, inliers: np.ndarray, failure_probability: float
-) -> float:
-    if len(inliers) >= kernel.num_samples():
-        return 0
-    inlier_ratio = float(len(inliers)) / kernel.num_samples()
-    n = kernel.required_samples
-    return math.log(failure_probability) / math.log(1.0 - inlier_ratio**n)
-
-
-TRansacSolution = Tuple[np.ndarray, np.ndarray, float]
-
-
-def ransac(kernel: Any, threshold: float) -> TRansacSolution:
-    """Robustly fit a model to data.
-
-    >>> x = np.array([1., 2., 3.])
-    >>> y = np.array([2., 4., 7.])
-    >>> kernel = TestLinearKernel(x, y)
-    >>> model, inliers, error = ransac(kernel, 0.1)
-    >>> np.allclose(model, 2.0)
-    True
-    >>> inliers
-    array([0, 1])
-    >>> np.allclose(error, 0.1)
-    True
-    """
-    max_iterations = 1000
-    best_error = float("inf")
-    best_model = None
-    best_inliers = []
-    i = 0
-    while i < max_iterations:
-        try:
-            samples = kernel.sampling()
-        except AttributeError:
-            samples = random.sample(
-                range(kernel.num_samples()), kernel.required_samples
-            )
-        models = kernel.fit(samples)
-        for model in models:
-            errors = kernel.evaluate(model)
-            inliers = np.flatnonzero(np.fabs(errors) < threshold)
-            error = np.fabs(errors).clip(0, threshold).sum()
-            if len(inliers) and error < best_error:
-                best_error = error
-                best_model = model
-                best_inliers = inliers
-                max_iterations = min(
-                    max_iterations, ransac_max_iterations(kernel, best_inliers, 0.01)
-                )
-        i += 1
-    return best_model, best_inliers, best_error
-
-
-class TestLinearKernel:
-    """A kernel for the model y = a * x.
-
-    >>> x = np.array([1., 2., 3.])
-    >>> y = np.array([2., 4., 7.])
-    >>> kernel = TestLinearKernel(x, y)
-    >>> models = kernel.fit([0])
-    >>> models
-    [2.0]
-    >>> errors = kernel.evaluate(models[0])
-    >>> np.allclose(errors, [0., 0., 1.])
-    True
-    """
-
-    required_samples = 1
-
-    def __init__(self, x: np.ndarray, y: np.ndarray) -> None:
-        self.x: np.ndarray = x
-        self.y: np.ndarray = y
-
-    def num_samples(self) -> int:
-        return len(self.x)
-
-    def fit(self, samples: np.ndarray) -> List[float]:
-        x = self.x[samples[0]]
-        y = self.y[samples[0]]
-        return [y / x]
-
-    def evaluate(self, model: np.ndarray) -> np.ndarray:
-        return self.y - model * self.x
-
-
-class PlaneKernel:
-    """
-    A kernel for estimating plane from on-plane points and vectors
-    """
-
-    def __init__(
-        self, points, vectors, verticals, point_threshold=1.0, vector_threshold=5.0
-    ) -> None:
-        self.points = points
-        self.vectors = vectors
-        self.verticals = verticals
-        self.required_samples = 3
-        self.point_threshold = point_threshold
-        self.vector_threshold = vector_threshold
-
-    def num_samples(self) -> int:
-        return len(self.points)
-
-    def sampling(self) -> Dict[str, Any]:
-        samples = {}
-        if len(self.vectors) > 0:
-            samples["points"] = self.points[
-                random.sample(range(len(self.points)), 2), :
-            ]
-            samples["vectors"] = [
-                self.vectors[i] for i in random.sample(range(len(self.vectors)), 1)
-            ]
-        else:
-            samples["points"] = self.points[
-                :, random.sample(range(len(self.points)), 3)
-            ]
-            samples["vectors"] = None
-        return samples
-
-    def fit(self, samples: Dict[str, np.ndarray]) -> List[np.ndarray]:
-        model = fit_plane(samples["points"], samples["vectors"], self.verticals)
-        return [model]
-
-    def evaluate(self, model) -> np.ndarray:
-        # only evaluate on points
-        normal = model[0:3]
-        normal_norm = np.linalg.norm(normal) + 1e-10
-        point_error = np.abs(model.T.dot(homogeneous(self.points).T)) / normal_norm
-        vectors = np.array(self.vectors)
-        vector_norm = np.sum(vectors * vectors, axis=1)
-        vectors = (vectors.T / vector_norm).T
-        vector_error = abs(
-            np.rad2deg(abs(np.arccos(vectors.dot(normal) / normal_norm))) - 90
-        )
-        vector_error[vector_error < self.vector_threshold] = 0.0
-        vector_error[vector_error >= self.vector_threshold] = self.point_threshold + 0.1
-        point_error[point_error < self.point_threshold] = 0.0
-        point_error[point_error >= self.point_threshold] = self.point_threshold + 0.1
-        errors = np.hstack((point_error, vector_error))
-        return errors
-
-
-def fit_plane_ransac(
-    points: np.ndarray,
-    vectors: np.ndarray,
-    verticals: np.ndarray,
-    point_threshold: float = 1.2,
-    vector_threshold: float = 5.0,
-) -> TRansacSolution:
-    vectors = np.array([v / math.pi * 180.0 for v in vectors])
-    kernel = PlaneKernel(
-        points - points.mean(axis=0),
-        vectors,
-        verticals,
-        point_threshold,
-        vector_threshold,
-    )
-    p, inliers, error = ransac(kernel, point_threshold)
-    num_point = points.shape[0]
-    points_inliers = points[inliers[inliers < num_point], :]
-    vectors_inliers = np.array(
-        [vectors[i - num_point] for i in inliers[inliers >= num_point]]
-    )
-    p = fit_plane(
-        points_inliers - points_inliers.mean(axis=0), vectors_inliers, verticals
-    )
-    return p, inliers, error
-
-
 def fit_plane(
-    points: np.ndarray, vectors: Optional[np.ndarray], verticals: Optional[np.ndarray]
-) -> np.ndarray:
+    points: NDArray, vectors: Optional[NDArray], verticals: Optional[NDArray]
+) -> NDArray:
     """Estimate a plane from on-plane points and vectors.
 
     >>> x = [[0,0,0], [1,0,0], [0,1,0]]
@@ -345,7 +175,7 @@ def fit_plane(
     return p
 
 
-def plane_horizontalling_rotation(p: np.ndarray) -> Optional[np.ndarray]:
+def plane_horizontalling_rotation(p: NDArray) -> Optional[NDArray]:
     """Compute a rotation that brings p to z=0
 
     >>> p = [1.0, 2.0, 3.0]
@@ -382,8 +212,8 @@ def plane_horizontalling_rotation(p: np.ndarray) -> Optional[np.ndarray]:
 
 
 def fit_similarity_transform(
-    p1: np.ndarray, p2: np.ndarray, max_iterations: int = 1000, threshold: float = 1
-) -> Tuple[np.ndarray, np.ndarray]:
+    p1: NDArray, p2: NDArray, max_iterations: int = 1000, threshold: float = 1
+) -> Tuple[NDArray, NDArray]:
     """Fit a similarity transform T such as p2 = T . p1 between two points sets p1 and p2"""
     # TODO (Yubin): adapt to RANSAC class
 
@@ -415,15 +245,18 @@ def fit_similarity_transform(
         errors = np.sqrt(np.sum((p2h.T - np.dot(best_T, p1h.T)) ** 2, axis=0))
         best_inliers = np.argwhere(errors < threshold)[:, 0]
 
+    # pyre-fixme[7]: Expected `Tuple[ndarray[typing.Any, typing.Any],
+    #  ndarray[typing.Any, typing.Any]]` but got `Tuple[ndarray[typing.Any,
+    #  typing.Any], Union[List[typing.Any], ndarray[typing.Any, dtype[typing.Any]]]]`.
     return best_T, best_inliers
 
 
-def K_from_camera(camera: Dict[str, Any]) -> np.ndarray:
+def K_from_camera(camera: Dict[str, Any]) -> NDArray:
     f = float(camera["focal"])
     return np.array([[f, 0.0, 0.0], [0.0, f, 0.0], [0.0, 0.0, 1.0]])
 
 
-def focal_from_homography(H: np.ndarray) -> np.ndarray:
+def focal_from_homography(H: NDArray) -> NDArray:
     """Solve for w = H w H^t, with w = diag(a, a, b)
 
     >>> K = np.diag([0.8, 0.8, 1])
@@ -449,10 +282,10 @@ def focal_from_homography(H: np.ndarray) -> np.ndarray:
     return focal
 
 
-def R_from_homography(
-    H: np.ndarray, f1: np.ndarray, f2: np.ndarray
-) -> Optional[np.ndarray]:
+def R_from_homography(H: NDArray, f1: NDArray, f2: NDArray) -> Optional[NDArray]:
+    # pyre-fixme[6]: For 1st argument expected `Union[_SupportsArray[dtype[typing.Any...
     K1 = np.diag([f1, f1, 1])
+    # pyre-fixme[6]: For 1st argument expected `Union[_SupportsArray[dtype[typing.Any...
     K2 = np.diag([f2, f2, 1])
     K2inv = np.linalg.inv(K2)
     R = K2inv.dot(H).dot(K1)
@@ -460,7 +293,7 @@ def R_from_homography(
     return R
 
 
-def project_to_rotation_matrix(A: np.ndarray) -> Optional[np.ndarray]:
+def project_to_rotation_matrix(A: NDArray) -> Optional[NDArray]:
     try:
         u, d, vt = np.linalg.svd(A)
     except np.linalg.linalg.LinAlgError:
@@ -468,7 +301,7 @@ def project_to_rotation_matrix(A: np.ndarray) -> Optional[np.ndarray]:
     return u.dot(vt)
 
 
-def camera_up_vector(rotation_matrix: np.ndarray) -> np.ndarray:
+def camera_up_vector(rotation_matrix: NDArray) -> NDArray:
     """Unit vector pointing to zenit in camera coords.
 
     :param rotation: camera pose rotation
@@ -476,7 +309,7 @@ def camera_up_vector(rotation_matrix: np.ndarray) -> np.ndarray:
     return rotation_matrix[:, 2]
 
 
-def camera_compass_angle(rotation_matrix: np.ndarray) -> float:
+def camera_compass_angle(rotation_matrix: NDArray) -> float:
     """Compass angle of a camera
 
     Angle between world's Y axis and camera's Z axis projected
@@ -491,7 +324,7 @@ def camera_compass_angle(rotation_matrix: np.ndarray) -> float:
 
 def rotation_matrix_from_up_vector_and_compass(
     up_vector: List[float], compass_angle: float
-) -> np.ndarray:
+) -> NDArray:
     """Camera rotation given up_vector and compass.
 
     >>> d = [1, 2, 3]
@@ -530,8 +363,8 @@ def rotation_matrix_from_up_vector_and_compass(
 
 
 def motion_from_plane_homography(
-    H: np.ndarray,
-) -> Optional[List[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]]]:
+    H: NDArray,
+) -> Optional[List[Tuple[NDArray, NDArray, NDArray, NDArray]]]:
     """Compute candidate camera motions from a plane-induced homography.
 
     Returns up to 8 motions.
@@ -566,44 +399,54 @@ def motion_from_plane_homography(
     ]
     solutions = []
 
-    # Case d' > 0
+    # Compute solutions for the two cases (1) case d' > 0 and
+    # (2) case d' < 0
+
     for x1, x3 in possible_x1_x3:
-        sin_theta = (d1 - d3) * x1 * x3 / d2
-        cos_theta = (d1 * x3**2 + d3 * x1**2) / d2
-        Rp = np.array(
+        # compute sin and cos for d'>0 (theta, _n) and d'<0 (phi, _n) cases
+        sin_term = x1 * x3 / d2
+        sin_theta = (d1 - d3) * sin_term
+        sin_phi = (d1 + d3) * sin_term
+
+        d1_x3_2 = d1 * x3**2
+        d3_x1_2 = d3 * x1**2
+        cos_theta = (d3_x1_2 + d1_x3_2) / d2
+        cos_phi = (d3_x1_2 - d1_x3_2) / d2
+
+        # define rotation matrices for both cases
+        Rp_p = np.array(
             [[cos_theta, 0, -sin_theta], [0, 1, 0], [sin_theta, 0, cos_theta]]
-        )
-        tp = (d1 - d3) * np.array([x1, 0, -x3])
+        )  # case d' > 0
+        Rp_n = np.array(
+            [[cos_phi, 0, sin_phi], [0, -1, 0], [sin_phi, 0, -cos_phi]]
+        )  # case d' < 0
+
+        # compute transformations
         np_ = np.array([x1, 0, x3])
-        R = s * np.dot(np.dot(u, Rp), vh)
-        t = np.dot(u, tp)
+
+        tp_p = (d1 - d3) * np.array([x1, 0, -x3])  # case d' > 0
+        tp_n = (d1 + d3) * np_  # case d' < 0
+
+        R_p = s * np.dot(np.dot(u, Rp_p), vh)  # case d' > 0
+        R_n = s * np.dot(np.dot(u, Rp_n), vh)  # case d' < 0
+        t_p = np.dot(u, tp_p)  # case d' > 0
+        t_n = np.dot(u, tp_n)  # case d' < 0
         n = -np.dot(vh.T, np_)
         d = s * d2
-        solutions.append((R, t, n, d))
 
-    # Case d' < 0
-    for x1, x3 in possible_x1_x3:
-        sin_phi = (d1 + d3) * x1 * x3 / d2
-        cos_phi = (d3 * x1**2 - d1 * x3**2) / d2
-        Rp = np.array([[cos_phi, 0, sin_phi], [0, -1, 0], [sin_phi, 0, -cos_phi]])
-        tp = (d1 + d3) * np.array([x1, 0, x3])
-        np_ = np.array([x1, 0, x3])
-        R = s * np.dot(np.dot(u, Rp), vh)
-        t = np.dot(u, tp)
-        n = -np.dot(vh.T, np_)
-        d = -s * d2
-        solutions.append((R, t, n, d))
+        solutions.append((R_p, t_p, n, d))  # case d' > 0
+        solutions.append((R_n, t_n, n, -d))  # case d' < 0
 
     return solutions
 
 
 def absolute_pose_known_rotation_ransac(
-    bs: np.ndarray,
-    Xs: np.ndarray,
+    bs: NDArray,
+    Xs: NDArray,
     threshold: float,
     iterations: int,
     probability: float,
-) -> np.ndarray:
+) -> NDArray:
     params = pyrobust.RobustEstimatorParams()
     params.iterations = iterations
     result = pyrobust.ransac_absolute_pose_known_rotation(
@@ -616,12 +459,12 @@ def absolute_pose_known_rotation_ransac(
 
 
 def absolute_pose_ransac(
-    bs: np.ndarray,
-    Xs: np.ndarray,
+    bs: NDArray,
+    Xs: NDArray,
     threshold: float,
     iterations: int,
     probability: float,
-) -> np.ndarray:
+) -> NDArray:
     params = pyrobust.RobustEstimatorParams()
     params.iterations = iterations
     result = pyrobust.ransac_absolute_pose(
@@ -636,12 +479,12 @@ def absolute_pose_ransac(
 
 
 def relative_pose_ransac(
-    b1: np.ndarray,
-    b2: np.ndarray,
+    b1: NDArray,
+    b2: NDArray,
     threshold: float,
     iterations: int,
     probability: float,
-) -> np.ndarray:
+) -> NDArray:
     params = pyrobust.RobustEstimatorParams()
     params.iterations = iterations
     result = pyrobust.ransac_relative_pose(
@@ -656,12 +499,12 @@ def relative_pose_ransac(
 
 
 def relative_pose_ransac_rotation_only(
-    b1: np.ndarray,
-    b2: np.ndarray,
+    b1: NDArray,
+    b2: NDArray,
     threshold: float,
     iterations: int,
     probability: float,
-) -> np.ndarray:
+) -> NDArray:
     params = pyrobust.RobustEstimatorParams()
     params.iterations = iterations
     result = pyrobust.ransac_relative_rotation(
@@ -671,8 +514,8 @@ def relative_pose_ransac_rotation_only(
 
 
 def relative_pose_optimize_nonlinear(
-    b1: np.ndarray, b2: np.ndarray, t: np.ndarray, R: np.ndarray, iterations: int
-) -> np.ndarray:
+    b1: NDArray, b2: NDArray, t: NDArray, R: NDArray, iterations: int
+) -> NDArray:
     Rt = np.zeros((3, 4))
     Rt[:3, :3] = R.T
     Rt[:, 3] = -R.T.dot(t)
@@ -689,7 +532,9 @@ def triangulate_gcp(
     shots: Dict[str, pymap.Shot],
     reproj_threshold: float = 0.02,
     min_ray_angle_degrees: float = 1.0,
-) -> Optional[np.ndarray]:
+    min_depth: float = 0.001,
+    iterations: int = 10,
+) -> Optional[NDArray]:
     """Compute the reconstructed position of a GCP from observations."""
 
     os, bs, ids = [], [], []
@@ -706,13 +551,17 @@ def triangulate_gcp(
 
     if len(os) >= 2:
         thresholds = len(os) * [reproj_threshold]
+        os = np.asarray(os)
+        bs = np.asarray(bs)
         valid_triangulation, X = pygeometry.triangulate_bearings_midpoint(
-            np.asarray(os),
-            np.asarray(bs),
+            os,
+            bs,
             thresholds,
             np.radians(min_ray_angle_degrees),
-            np.radians(180.0 - min_ray_angle_degrees),
+            min_depth,
         )
+        
         if valid_triangulation:
+            X = pygeometry.point_refinement(os, bs, X, iterations)
             return X
     return None

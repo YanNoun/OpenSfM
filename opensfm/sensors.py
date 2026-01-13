@@ -1,5 +1,7 @@
+# pyre-strict
 from functools import lru_cache
 from typing import Any, Dict, List
+
 import yaml
 from opensfm import context
 from opensfm import io
@@ -28,7 +30,7 @@ def sensor_data() -> Dict[str, Any]:
 
 
 @lru_cache(1)
-def camera_calibration()-> List[Dict[str, Any]]:
+def camera_calibration() -> List[Dict[str, Any]]:
     with io.open_rt(context.CAMERA_CALIBRATION) as f:
         data = yaml.safe_load(f)
     return data

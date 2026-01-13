@@ -1,14 +1,14 @@
+# pyre-strict
 from functools import lru_cache
-from typing import List, Tuple, Iterable, Dict, Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
-from opensfm import pyfeatures, feature_loader, bow
+from numpy.typing import NDArray
+from opensfm import bow, feature_loader, pyfeatures
 from opensfm.dataset_base import DataSetBase
 
 
-def unnormalized_vlad(
-    features: np.ndarray, centers: np.ndarray
-) -> Optional[np.ndarray]:
+def unnormalized_vlad(features: NDArray, centers: NDArray) -> Optional[NDArray]:
     """Compute unnormalized VLAD histograms from a set of
     features in relation to centers.
 
@@ -21,7 +21,7 @@ def unnormalized_vlad(
     return pyfeatures.compute_vlad_descriptor(features, centers)
 
 
-def signed_square_root_normalize(v: np.ndarray) -> np.ndarray:
+def signed_square_root_normalize(v: NDArray) -> NDArray:
     """Compute Signed Square Root (SSR) normalization on
     a vector.
 
@@ -33,7 +33,7 @@ def signed_square_root_normalize(v: np.ndarray) -> np.ndarray:
 
 
 def vlad_distances(
-    image: str, other_images: Iterable[str], histograms: Dict[str, np.ndarray]
+    image: str, other_images: Iterable[str], histograms: Dict[str, NDArray]
 ) -> Tuple[str, List[float], List[str]]:
     """Compute VLAD-based distance (L2 on VLAD-histogram)
     between an image and other images.
@@ -41,24 +41,30 @@ def vlad_distances(
     Returns the image, the order of the other images,
     and the other images.
     """
+
+    # avoid passing a gigantic VLAD dictionary in case of preemption : copy instead
+    ratio_copy = 0.5
+    need_copy = len(other_images) < ratio_copy*len(histograms)
+    candidates = {k: histograms[k] for k in other_images + [image]} if need_copy else histograms
+
     distances, others = pyfeatures.compute_vlad_distances(
-        histograms, image, set(other_images)
+        candidates, image, set(other_images)
     )
     return image, distances, others
 
 
-class VladCache(object):
+class VladCache:
     def clear_cache(self) -> None:
         self.load_words.cache_clear()
         self.vlad_histogram.cache_clear()
 
     @lru_cache(1)
-    def load_words(self, data: DataSetBase) -> np.ndarray:
+    def load_words(self, data: DataSetBase) -> NDArray:
         words, _ = bow.load_vlad_words_and_frequencies(data.config)
         return words
 
     @lru_cache(1000)
-    def vlad_histogram(self, data: DataSetBase, image: str) -> Optional[np.ndarray]:
+    def vlad_histogram(self, data: DataSetBase, image: str) -> Optional[NDArray]:
         words = self.load_words(data)
         features_data = feature_loader.instance.load_all_data(
             data, image, masked=True, segmentation_in_descriptor=False

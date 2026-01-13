@@ -1,10 +1,10 @@
-from opensfm.large import metadataset
-from opensfm.large import tools
+# pyre-strict
 from opensfm.dataset import DataSet
+from opensfm.large import metadataset, tools
 
 
 def run_dataset(data: DataSet) -> None:
-    """ Align submodel reconstructions for of MetaDataSet. """
+    """Align submodel reconstructions for of MetaDataSet."""
 
     meta_data = metadataset.MetaDataSet(data.data_path)
     reconstruction_shots = tools.load_reconstruction_shots(meta_data)

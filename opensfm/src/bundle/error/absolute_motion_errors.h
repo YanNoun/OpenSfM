@@ -28,7 +28,7 @@ struct UpVectorError {
   }
 
   Vec3d acceleration_;
-  double scale_;
+  const double scale_;
 };
 
 struct PanAngleError {
@@ -53,8 +53,8 @@ struct PanAngleError {
     return true;
   }
 
-  double angle_;
-  double scale_;
+  const double angle_;
+  const double scale_;
 };
 
 struct TiltAngleError {
@@ -77,8 +77,8 @@ struct TiltAngleError {
     return true;
   }
 
-  double angle_;
-  double scale_;
+  const double angle_;
+  const double scale_;
 };
 
 struct RollAngleError {
@@ -93,7 +93,6 @@ struct RollAngleError {
     T ex[3] = {T(1), T(0), T(0)};  // A point to the right of the camera (x=1)
     T ez[3] = {T(0), T(0), T(1)};  // A point in front of the camera (z=1)
     T Rt_ex[3], Rt_ez[3];
-    T tangle_ = T(angle_);
     ceres::AngleAxisRotatePoint(R.data(), ex, Rt_ex);
     ceres::AngleAxisRotatePoint(R.data(), ez, Rt_ez);
 
@@ -122,8 +121,8 @@ struct RollAngleError {
     return true;
   }
 
-  double angle_;
-  double scale_;
+  const double angle_;
+  const double scale_;
 };
 
 struct HeatmapdCostFunctor {
@@ -180,12 +179,14 @@ struct TranslationPriorError {
   template <typename T>
   bool operator()(const T* const rig_instance1, const T* const rig_instance2,
                   T* residuals) const {
-    auto t1 = Eigen::Map<const Vec3<T>>(rig_instance1 + Pose::Parameter::TX);
-    auto t2 = Eigen::Map<const Vec3<T>>(rig_instance2 + Pose::Parameter::TX);
+    const auto t1 =
+        Eigen::Map<const Vec3<T>>(rig_instance1 + Pose::Parameter::TX);
+    const auto t2 =
+        Eigen::Map<const Vec3<T>>(rig_instance2 + Pose::Parameter::TX);
     residuals[0] = log((t1 - t2).norm() / T(prior_norm_));
     return true;
   }
 
-  double prior_norm_;
+  const double prior_norm_;
 };
 }  // namespace bundle

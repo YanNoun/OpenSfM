@@ -1,3 +1,4 @@
+# pyre-strict
 import logging
 import os
 from typing import Optional

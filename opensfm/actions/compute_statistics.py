@@ -1,15 +1,15 @@
+# pyre-strict
 import logging
 import os
 
-from opensfm import io
-from opensfm import stats
+from opensfm import io, stats
 from opensfm.dataset import DataSet
 
 logger: logging.Logger = logging.getLogger(__name__)
 logging.getLogger('matplotlib.font_manager').disabled = True
 
 
-def run_dataset(data: DataSet, diagram_max_points: int=-1) -> None:
+def run_dataset(data: DataSet, diagram_max_points: int = -1) -> None:
     """Compute various staistics of a datasets and write them to 'stats' folder
 
     Args:

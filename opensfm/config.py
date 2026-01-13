@@ -1,5 +1,9 @@
+# pyre-strict
+
+from __future__ import annotations
+
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Dict, IO, Union
 
 import yaml
@@ -33,6 +37,10 @@ class OpenSfMConfig:
     feature_use_adaptive_suppression: bool = False
     # Bake segmentation info (class and instance) in the feature data. Thus it is done once for all at extraction time.
     features_bake_segmentation: bool = False
+    # Maximum amount of memory to use for feature extraction (in MB). See default in features_processing.py.
+    mem_ceiling: int | None = None
+    # Ratio of the memory ceiling to use for feature extraction. See default in features_processing.py.
+    mem_ratio: float | None = None
 
     ##################################
     # Params for SIFT
@@ -41,6 +49,12 @@ class OpenSfMConfig:
     sift_peak_threshold: float = 0.2
     # See OpenCV doc
     sift_edge_threshold: int = 10
+    # See OpenCV doc
+    sift_nfeatures: int = 0
+    # See OpenCV doc
+    sift_octave_layers: int = 3
+    # See OpenCV doc
+    sift_sigma: float = 1.6
 
     ##################################
     # Params for SURF
@@ -196,6 +210,8 @@ class OpenSfMConfig:
     triangulation_threshold: float = 0.006
     # Minimum angle between views to accept a triangulated point
     triangulation_min_ray_angle: float = 1.0
+    # Minimum depth to accept a triangulated point
+    triangulation_min_depth: float = 0.001
     # Triangulation type : either considering all rays (FULL), or sing a RANSAC variant (ROBUST)
     triangulation_type: str = "FULL"
     # Number of LM iterations to run when refining a point
@@ -210,6 +226,14 @@ class OpenSfMConfig:
     ##################################
     # Minimum number of features/images per track
     min_track_length: int = 2
+    # Whether to use depth prior during BA
+    use_depth_prior: bool = False
+    # Depth prior default std deviation
+    depth_std_deviation_m_default: float = 1.0
+    # Whether depth is radial (distance to camera center) or Z value
+    depth_is_radial: bool = False
+    # Whether depth is stored as inverted depth
+    depth_is_inverted: bool = False
 
     ##################################
     # Params for bundle adjustment
@@ -222,6 +246,8 @@ class OpenSfMConfig:
     reprojection_error_sd: float = 0.004
     # The standard deviation of the exif focal length in log-scale
     exif_focal_sd: float = 0.01
+    # The standard deviation of aspect ratio, i.e. fu/fv, in log-scale
+    aspect_ratio_sd: float = 0.01
     # The standard deviation of the principal point coordinates
     principal_point_sd: float = 0.01
     # The standard deviation of the first radial distortion parameter
@@ -241,7 +267,7 @@ class OpenSfMConfig:
     # The default vertical standard deviation of the GCPs (in meters)
     gcp_vertical_sd: float = 0.1
     # Global weight for GCPs, expressed a ratio of the sum of (# projections) + (# shots) + (# relative motions)
-    gcp_global_weight: float = 0.01
+    gcp_global_weight: float = 0.04
     # The standard deviation of the rig translation
     rig_translation_sd: float = 0.1
     # The standard deviation of the rig rotation
@@ -257,6 +283,8 @@ class OpenSfMConfig:
     # Maximum optimizer iterations.
     bundle_max_iterations: int = 100
 
+    # Ratio of (resection candidates / total tracks) of a given image so that it is culled at resection and resected later
+    resect_redundancy_threshold: float = 0.7
     # Retriangulate all points from time to time
     retriangulation: bool = True
     # Retriangulate when the number of points grows by this ratio
@@ -273,15 +301,24 @@ class OpenSfMConfig:
     local_bundle_min_common_points: int = 20
     # Max number of shots to optimize during local bundle adjustment
     local_bundle_max_shots: int = 30
+    # Number of grid division for seleccting tracks in local bundle adjustment
+    local_bundle_grid: int = 12
+    # Number of grid division for selecting tracks in final bundle adjustment
+    final_bundle_grid: int = 32
+    # For debugging purpose of large datasets: limit the maximum number of shots in incremental reconstruction
+    incremental_max_shots_count: int = 0
+
+    # Remove uncertain and isolated points from the final point cloud
+    filter_final_point_cloud: bool = False
 
     # Save reconstructions at every iteration
     save_partial_reconstructions: bool = False
 
     ##################################
-    # Params for GPS alignment
+    # Params for GPS/GCP alignment
     ##################################
     # Use or ignore EXIF altitude tag
-    use_altitude_tag: bool = False
+    use_altitude_tag: bool = True
     # orientation_prior or naive
     align_method: str = "auto"
     # horizontal, vertical or no_roll
@@ -292,6 +329,8 @@ class OpenSfMConfig:
     bundle_use_gcp: bool = True
     # Compensate GPS with a per-camera similarity transform
     bundle_compensate_gps_bias: bool = False
+    # Thrershold for the reprojection error of GCPs to be considered outliers
+    gcp_reprojection_error_threshold: float = 0.05
 
     ##################################
     # Params for rigs
@@ -374,7 +413,7 @@ def default_config() -> Dict[str, Any]:
     return asdict(OpenSfMConfig())
 
 
-def load_config(filepath) -> Dict[str, Any]:
+def load_config(filepath: str) -> Dict[str, Any]:
     """DEPRECATED: = Load config from a config.yaml filepath"""
     if not os.path.isfile(filepath):
         return default_config()
@@ -384,7 +423,7 @@ def load_config(filepath) -> Dict[str, Any]:
 
 
 def load_config_from_fileobject(
-    f: Union[IO[bytes], IO[str], bytes, str]
+    f: Union[IO[bytes], IO[str], bytes, str],
 ) -> Dict[str, Any]:
     """Load config from a config.yaml fileobject"""
     config = default_config()

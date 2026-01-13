@@ -9,11 +9,16 @@
 #include <vector>
 
 namespace map {
+
+// Index type for observation storage
+using ObservationIndex = size_t;
+constexpr ObservationIndex INVALID_OBSERVATION_INDEX =
+    static_cast<ObservationIndex>(-1);
+
 class TracksManager {
  public:
   void AddObservation(const ShotId& shot_id, const TrackId& track_id,
                       const Observation& observation);
-  void RemoveObservation(const ShotId& shot_id, const TrackId& track_id);
   Observation GetObservation(const ShotId& shot, const TrackId& track) const;
 
   int NumShots() const;
@@ -21,9 +26,13 @@ class TracksManager {
   std::vector<ShotId> GetShotIds() const;
   std::vector<TrackId> GetTrackIds() const;
 
-  const std::unordered_map<TrackId, Observation>& GetShotObservations(
+  // Returns a map of track_id -> observation for a given shot
+  // Note: This constructs the map on each call (no longer returns a reference)
+  std::unordered_map<TrackId, Observation> GetShotObservations(
       const ShotId& shot) const;
-  const std::unordered_map<ShotId, Observation>& GetTrackObservations(
+  // Returns a map of shot_id -> observation for a given track
+  // Note: This constructs the map on each call (no longer returns a reference)
+  std::unordered_map<ShotId, Observation> GetTrackObservations(
       const TrackId& track) const;
 
   TracksManager ConstructSubTracksManager(
@@ -33,6 +42,9 @@ class TracksManager {
   using KeyPointTuple = std::tuple<TrackId, Observation, Observation>;
   std::vector<KeyPointTuple> GetAllCommonObservations(
       const ShotId& shot1, const ShotId& shot2) const;
+  std::tuple<std::vector<map::TrackId>, MatX2f, MatX2f>
+  GetAllCommonObservationsArrays(const ShotId& shot1,
+                                 const ShotId& shot2) const;
 
   using ShotPair = std::pair<ShotId, ShotId>;
   std::unordered_map<ShotPair, int, HashPair> GetAllPairsConnectivity(
@@ -54,9 +66,26 @@ class TracksManager {
   static int TRACKS_VERSION;
 
  private:
-  std::unordered_map<ShotId, std::unordered_map<TrackId, Observation>>
-      tracks_per_shot_;
-  std::unordered_map<TrackId, std::unordered_map<ShotId, Observation>>
-      shots_per_track_;
+  // Interning types and helpers
+  using StringId = size_t;
+  StringId GetShotIndex(const ShotId& id);
+  StringId GetTrackIndex(const TrackId& id);
+  StringId GetOrInsertShotIndex(const ShotId& id);
+  StringId GetOrInsertTrackIndex(const TrackId& id);
+
+  // Single storage for all observations - each observation stored exactly once
+  std::vector<Observation> observations_;
+
+  // Interning storage
+  std::vector<ShotId> shot_ids_;
+  std::vector<TrackId> track_ids_;
+  std::unordered_map<ShotId, StringId> shot_id_to_index_;
+  std::unordered_map<TrackId, StringId> track_id_to_index_;
+
+  // Adjacency lists using integer indices
+  // tracks_per_shot_[shot_index] -> map {track_index -> obs_index}
+  std::vector<std::unordered_map<StringId, ObservationIndex>> tracks_per_shot_;
+  // shots_per_track_[track_index] -> map {shot_index -> obs_index}
+  std::vector<std::unordered_map<StringId, ObservationIndex>> shots_per_track_;
 };
 }  // namespace map

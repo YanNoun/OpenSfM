@@ -95,9 +95,9 @@ Camera Camera::CreateFisheye62Camera(double focal, double aspect_ratio,
 
 /**
   Create a Fisheye624 camera with 15 parameters:
-  - params: f, cx, cy, (radial) k1, k2, k3, k4, k5, k6 (tangential) p1, p2 (thin prism) s0, s1, s2, s3
-  Note that in arvr, the parameters start at 0 and p1/p2 are reversed
-  See: https://fburl.com/diffusion/xnhraa2z
+  - params: f, cx, cy, (radial) k1, k2, k3, k4, k5, k6 (tangential) p1, p2 (thin
+  prism) s0, s1, s2, s3 Note that in arvr, the parameters start at 0 and p1/p2
+  are reversed See: https://fburl.com/diffusion/xnhraa2z
 */
 Camera Camera::CreateFisheye624Camera(double focal, double aspect_ratio,
                                       const Vec2d& principal_point,
@@ -117,9 +117,9 @@ Camera Camera::CreateFisheye624Camera(double focal, double aspect_ratio,
                    Camera::Parameters::Cx,    Camera::Parameters::Cy};
   camera.values_.resize(16);
   camera.values_ << distortion[0], distortion[1], distortion[2], distortion[3],
-      distortion[4], distortion[5], distortion[6], distortion[7],
-      distortion[8], distortion[9], distortion[10], distortion[11],
-      focal, aspect_ratio, principal_point[0], principal_point[1];
+      distortion[4], distortion[5], distortion[6], distortion[7], distortion[8],
+      distortion[9], distortion[10], distortion[11], focal, aspect_ratio,
+      principal_point[0], principal_point[1];
   return camera;
 }
 
@@ -276,15 +276,15 @@ Mat3d Camera::GetProjectionMatrix() const {
   return unnormalized;
 }
 
-Mat3d Camera::GetProjectionMatrixScaled(int width, int height) const {
-  const auto unnormalizer = std::max(width, height);
+Mat3d Camera::GetProjectionMatrixScaled(int width_2, int height_2) const {
+  const auto unnormalizer = std::max(width_2, height_2);
   Mat3d unnormalized = Mat3d::Zero();
 
   const auto projection_matrix = GetProjectionMatrix();
   unnormalized.block<2, 2>(0, 0)
       << unnormalizer * projection_matrix.block<2, 2>(0, 0);
-  unnormalized.col(2) << projection_matrix(0, 2) * unnormalizer + 0.5 * width,
-      projection_matrix(1, 2) * unnormalizer + 0.5 * height, 1.0;
+  unnormalized.col(2) << projection_matrix(0, 2) * unnormalizer + 0.5 * width_2,
+      projection_matrix(1, 2) * unnormalizer + 0.5 * height_2, 1.0;
   return unnormalized;
 }
 
@@ -366,7 +366,7 @@ MatX2d Camera::PixelToNormalizedCoordinatesMany(const MatX2d& px_coords,
     norm_coords.row(i) =
         PixelToNormalizedCoordinates(px_coords.row(i), width, height);
   }
-  return px_coords;
+  return norm_coords;
 }
 
 Vec2d Camera::NormalizedToPixelCoordinates(const Vec2d& norm_coord) const {

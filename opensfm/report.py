@@ -1,22 +1,23 @@
+# pyre-strict
 import logging
 import os
 import subprocess
 import tempfile
+from typing import Any, Dict, List, Optional
 
 import PIL
 from fpdf import FPDF
 from opensfm import io
 from opensfm.dataset import DataSet
-from typing import Any, Dict
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 
 class Report:
-    def __init__(self, data: DataSet, stats = None) -> None:
-        self.output_path = os.path.join(data.data_path, "stats")
-        self.dataset_name = os.path.basename(data.data_path)
-        self.io_handler = data.io_handler
+    def __init__(self, data: DataSet) -> None:
+        self.output_path: str = os.path.join(data.data_path, "stats")
+        self.dataset_name: str = os.path.basename(data.data_path)
+        self.io_handler: io.IoFilesystemBase = data.io_handler
 
         self.mapi_light_light_green = [255, 255, 255]
         self.mapi_light_green = [0, 0, 0]
@@ -42,17 +43,20 @@ class Report:
             self.stats = self._read_stats_file("stats.json")
 
     def save_report(self, filename: str) -> None:
-        # pyre-fixme[28]: Unexpected keyword argument `dest`.
-        bytestring = self.pdf.output(dest="S")
+        bytestring = self.pdf.output()
         if isinstance(bytestring, str):
             bytestring = bytestring.encode("utf8")
 
-        with self.io_handler.open(
-            os.path.join(self.output_path, filename), "wb"
-        ) as fwb:
+        with self.io_handler.open_wb(os.path.join(self.output_path, filename)) as fwb:
             fwb.write(bytestring)
 
-    def _make_table(self, columns_names, rows, row_header=False) -> None:
+
+    def _make_table(
+        self,
+        columns_names: Optional[List[str]],
+        rows: List[List[str]],
+        row_header: bool = False,
+    ) -> None:
         if len(rows) == 0:
             logger.warning("Cannot make table (rows missing)")
             return
@@ -124,11 +128,11 @@ class Report:
         self.pdf.set_xy(self.margin, self.pdf.get_y() + self.margin)
 
     def _make_centered_image(self, image_path: str, desired_height: float) -> None:
-
         with tempfile.TemporaryDirectory() as tmp_local_dir:
-            local_image_path = os.path.join(tmp_local_dir, os.path.basename(image_path))
-            with self.io_handler.open(local_image_path, "wb") as fwb:
-                with self.io_handler.open(image_path, "rb") as f:
+            local_image_path = os.path.join(
+                tmp_local_dir, os.path.basename(image_path))
+            with self.io_handler.open_wb(local_image_path) as fwb:
+                with self.io_handler.open_rb(image_path) as f:
                     fwb.write(f.read())
 
             width, height = PIL.Image.open(local_image_path).size
@@ -181,7 +185,7 @@ class Report:
             ["Date", self.stats["processing_statistics"]["date"]],
             [
                 "Area Covered",
-                f"{self.stats['processing_statistics']['area']/1e6:.6f} km²",
+                f"{self.stats['processing_statistics']['area'] / 1e6:.6f} km²",
             ],
             [
                 "Processing Time",
@@ -232,7 +236,7 @@ class Report:
             ],
             [
                 "Reconstructed Points (Sparse)",
-                f"{rec_points} over {init_points} points ({rec_points/init_points*100:.1f}%)",
+                f"{rec_points} over {init_points} points ({rec_points / init_points * 100:.1f}%)",
             ],
             # [
             #     "Reconstructed Components",
@@ -295,7 +299,8 @@ class Report:
     def make_processing_time_details(self) -> None:
         self._make_section("Processing Time Details")
 
-        columns_names = list(self.stats["processing_statistics"]["steps_times"].keys())
+        columns_names = list(
+            self.stats["processing_statistics"]["steps_times"].keys())
         formatted_floats = []
         for v in self.stats["processing_statistics"]["steps_times"].values():
             formatted_floats.append(f"{v:.2f} sec.")
@@ -335,9 +340,12 @@ class Report:
                 continue
             for comp in ["x", "y", "z"]:
                 row = [comp.upper() + " Error (meters)"]
-                row.append(f"{self.stats[error_type + '_errors']['mean'][comp]:.3f}")
-                row.append(f"{self.stats[error_type +'_errors']['std'][comp]:.3f}")
-                row.append(f"{self.stats[error_type +'_errors']['error'][comp]:.3f}")
+                row.append(
+                    f"{self.stats[error_type + '_errors']['mean'][comp]:.3f}")
+                row.append(
+                    f"{self.stats[error_type + '_errors']['std'][comp]:.3f}")
+                row.append(
+                    f"{self.stats[error_type + '_errors']['error'][comp]:.3f}")
                 rows.append(row)
 
             rows.append(
@@ -345,7 +353,7 @@ class Report:
                     "Total",
                     "",
                     "",
-                    f"{self.stats[error_type +'_errors']['average_error']:.3f}",
+                    f"{self.stats[error_type + '_errors']['average_error']:.3f}",
                 ]
             )
             self._make_table(columns_names, rows)
@@ -419,6 +427,39 @@ class Report:
         dsm_feature_matches = os.path.join(self.output_path, "codem", "dsm_feature_matches.png")
         if os.path.isfile(dsm_feature_matches):
             self._make_centered_image(dsm_feature_matches, 80)
+
+
+    def make_orientation_details(self) -> None:
+        if "opk_errors" not in self.stats:
+            return
+        if "average_error" not in self.stats["opk_errors"]:
+            return
+
+        self._make_section("Orientation Error Details")
+        columns_names = ["Component", "Mean", "Sigma", "RMS Error"]
+        error_name = "opk_errors"
+
+        rows = []
+        for comp in ["omega", "phi", "kappa"]:
+            row = [comp.capitalize() + " Error (degrees)"]
+            row.append(
+                f"{self.stats[error_name]['mean'][comp]:.3f}")
+            row.append(
+                f"{self.stats[error_name]['std'][comp]:.3f}")
+            row.append(
+                f"{self.stats[error_name]['error'][comp]:.3f}")
+            rows.append(row)
+
+        rows.append(
+            [
+                "Total",
+                "",
+                "",
+                f"{self.stats[error_name]['average_error']:.3f}",
+            ]
+        )
+        self._make_table(columns_names, rows)
+        self.pdf.set_xy(self.margin, self.pdf.get_y() + self.margin / 2)
 
     def make_features_details(self) -> None:
         self._make_section("Features Details")
@@ -500,7 +541,8 @@ class Report:
 
             rows = []
             rows.append(["Initial"] + [f"{x:.4f}" for x in initial.values()])
-            rows.append(["Optimized"] + [f"{x:.4f}" for x in optimized.values()])
+            rows.append(["Optimized"] +
+                        [f"{x:.4f}" for x in optimized.values()])
 
             self._make_subsection(camera)
             self._make_table(names, rows)
@@ -508,7 +550,8 @@ class Report:
 
             residual_grid_height = 100
             self._make_centered_image(
-                os.path.join(self.output_path, residual_grids[0]), residual_grid_height
+                os.path.join(self.output_path,
+                             residual_grids[0]), residual_grid_height
             )
 
     def make_rig_cameras_details(self) -> None:

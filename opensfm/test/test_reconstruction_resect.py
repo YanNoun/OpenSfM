@@ -1,6 +1,10 @@
-import numpy as np
-from opensfm import config, multiview, pymap, reconstruction, types
+# pyre-strict
 from typing import Tuple
+
+import numpy as np
+from numpy.typing import NDArray
+from opensfm import config, multiview, pymap, reconstruction, types
+
 
 def test_corresponding_tracks() -> None:
     t1 = {"1": pymap.Observation(1.0, 1.0, 1.0, 0, 0, 0, 1, 1, 1)}
@@ -46,7 +50,10 @@ def test_corresponding_tracks() -> None:
 
 
 def copy_cluster_points(
-    cluster: types.Reconstruction, tracks_manager: pymap.TracksManager, points, noise
+    cluster: types.Reconstruction,
+    tracks_manager: pymap.TracksManager,
+    points: pymap.LandmarkView,
+    noise: float,
 ) -> types.Reconstruction:
     for shot in cluster.shots:
         for point in tracks_manager.get_shot_observations(shot):
@@ -58,13 +65,16 @@ def copy_cluster_points(
 
 
 def split_synthetic_reconstruction(
-    scene, tracks_manager: pymap.TracksManager, cluster_size, point_noise
+    scene: types.Reconstruction,
+    tracks_manager: pymap.TracksManager,
+    cluster_size: int,
+    point_noise: float,
 ) -> Tuple[types.Reconstruction, types.Reconstruction]:
     cluster1 = types.Reconstruction()
     cluster2 = types.Reconstruction()
     cluster1.cameras = scene.cameras
     cluster2.cameras = scene.cameras
-    for (i, shot) in zip(range(len(scene.shots)), scene.shots.values()):
+    for i, shot in zip(range(len(scene.shots)), scene.shots.values()):
         if i >= cluster_size:
             cluster2.add_shot(shot)
         if i <= cluster_size:
@@ -75,7 +85,9 @@ def split_synthetic_reconstruction(
     return cluster1, cluster2
 
 
-def move_and_scale_cluster(cluster: types.Reconstruction)->Tuple[types.Reconstruction, np.ndarray, float]:
+def move_and_scale_cluster(
+    cluster: types.Reconstruction,
+) -> Tuple[types.Reconstruction, NDArray, float]:
     scale = np.random.rand(1)
     translation = np.random.rand(3)
     for point in cluster.points.values():
@@ -83,7 +95,9 @@ def move_and_scale_cluster(cluster: types.Reconstruction)->Tuple[types.Reconstru
     return cluster, translation, scale
 
 
-def test_absolute_pose_generalized_shot(scene_synthetic_cube) -> None:
+def test_absolute_pose_generalized_shot(
+    scene_synthetic_cube: Tuple[types.Reconstruction, pymap.TracksManager],
+) -> None:
     """Whole reconstruction resection (generalized pose) on a toy
     reconstruction with 0.01 meter point noise and zero outliers."""
     noise = 0.01

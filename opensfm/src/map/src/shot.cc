@@ -152,7 +152,7 @@ geometry::Pose Shot::GetPoseInRig() const {
   return rig_camera_pose.Compose(pose_instance);
 }
 
-const geometry::Pose* const Shot::GetPose() const {
+const geometry::Pose* Shot::GetPose() const {
   *pose_ = GetPoseInRig();
   if (IsSingleShotRig(rig_instance_, rig_camera_)) {
     return &rig_instance_->GetPose();
@@ -160,7 +160,7 @@ const geometry::Pose* const Shot::GetPose() const {
   return pose_.get();
 }
 
-geometry::Pose* const Shot::GetPose() {
+geometry::Pose* Shot::GetPose() {
   *pose_ = GetPoseInRig();
   if (IsSingleShotRig(rig_instance_, rig_camera_)) {
     return &rig_instance_->GetPose();
@@ -183,6 +183,15 @@ MatX2d Shot::ProjectMany(const MatX3d& points) const {
 
 Vec3d Shot::Bearing(const Vec2d& point) const {
   return GetPose()->RotationCameraToWorld() * shot_camera_->Bearing(point);
+}
+
+Vec3d Shot::LandmarkBearing(const Landmark* landmark) const {
+  auto it = landmark_observations_.find(const_cast<Landmark*>(landmark));
+  if (it == landmark_observations_.end()) {
+    throw std::runtime_error("Landmark not observed in this shot");
+  }
+  const Observation& obs = it->second;
+  return Bearing(obs.point);
 }
 
 MatX3d Shot::BearingMany(const MatX2d& points) const {

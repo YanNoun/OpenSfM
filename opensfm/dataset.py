@@ -1,23 +1,15 @@
+# pyre-strict
 import gzip
 import json
 import logging
 import os
 import pickle
 from io import BytesIO
-from typing import Dict, List, Tuple, Optional, IO, Any
+from typing import Any, BinaryIO, Dict, List, Optional, Tuple
 
 import numpy as np
-from opensfm import (
-    config,
-    features,
-    geo,
-    io,
-    pygeometry,
-    types,
-    pymap,
-    masking,
-    rig,
-)
+from numpy.typing import NDArray
+from opensfm import config, features, geo, io, masking, pygeometry, pymap, rig, types
 from opensfm.dataset_base import DataSetBase
 from PIL.PngImagePlugin import PngImageFile
 import hashlib
@@ -40,14 +32,17 @@ class DataSet(DataSetBase):
     """
 
     io_handler: io.IoFilesystemBase = io.IoFilesystemDefault()
-    config = None
+    config: Dict[str, Any] = {}
     image_files: Dict[str, str] = {}
     mask_files: Dict[str, str] = {}
     image_list: List[str] = []
 
-    def __init__(self, data_path: str, io_handler=io.IoFilesystemDefault) -> None:
+    def __init__(
+        self, data_path: str, io_handler: Optional[io.IoFilesystemBase] = None
+    ) -> None:
         """Init dataset associated to a folder."""
-        self.io_handler = io_handler
+        if io_handler is not None:
+            self.io_handler = io_handler
         self.data_path = data_path
         self.load_config()
         self.load_image_list()
@@ -59,7 +54,7 @@ class DataSet(DataSetBase):
     def load_config(self) -> None:
         config_file_path = self._config_file()
         if self.io_handler.isfile(config_file_path):
-            with self.io_handler.open(config_file_path) as f:
+            with self.io_handler.open_rt(config_file_path) as f:
                 self.config = config.load_config_from_fileobject(f)
         else:
             self.config = config.default_config()
@@ -90,9 +85,9 @@ class DataSet(DataSetBase):
         """Path to the image file."""
         return self.image_files[image]
 
-    def open_image_file(self, image: str) -> IO[Any]:
+    def open_image_file(self, image: str) -> BinaryIO:
         """Open image file and return file object."""
-        return self.io_handler.open(self._image_file(image), "rb")
+        return self.io_handler.open_rb(self._image_file(image))
 
     def load_image(
         self,
@@ -100,7 +95,7 @@ class DataSet(DataSetBase):
         unchanged: bool = False,
         anydepth: bool = False,
         grayscale: bool = False,
-    ) -> np.ndarray:
+    ) -> NDArray:
         """Load image pixels as numpy array.
 
         The array is 3D, indexed by y-coord, x-coord, channel.
@@ -127,15 +122,16 @@ class DataSet(DataSetBase):
         else:
             self._set_mask_path(os.path.join(self.data_path, "masks"))
 
-    def load_mask(self, image: str) -> Optional[np.ndarray]:
+    def load_mask(self, image: str) -> Optional[NDArray]:
         """Load image mask if it exists, otherwise return None."""
         if image in self.mask_files:
             mask_path = self.mask_files[image]
             mask = self.io_handler.imread(mask_path, grayscale=True)
             if mask is None:
                 raise IOError(
-                    "Unable to load mask for image {} "
-                    "from file {}".format(image, mask_path)
+                    "Unable to load mask for image {} " "from file {}".format(
+                        image, mask_path
+                    )
                 )
         else:
             mask = None
@@ -147,7 +143,7 @@ class DataSet(DataSetBase):
     def _instances_file(self, image: str) -> str:
         return os.path.join(self._instances_path(), image + ".png")
 
-    def load_instances(self, image: str) -> Optional[np.ndarray]:
+    def load_instances(self, image: str) -> Optional[NDArray]:
         """Load image instances file if it exists, otherwise return None."""
         instances_file = self._instances_file(image)
         if self.io_handler.isfile(instances_file):
@@ -162,14 +158,14 @@ class DataSet(DataSetBase):
     def _segmentation_file(self, image: str) -> str:
         return os.path.join(self._segmentation_path(), image + ".png")
 
-    def segmentation_labels(self) -> List[Any]:
+    def segmentation_labels(self) -> List[Dict[str, Any]]:
         return []
 
-    def load_segmentation(self, image: str) -> Optional[np.ndarray]:
+    def load_segmentation(self, image: str) -> Optional[NDArray]:
         """Load image segmentation if it exists, otherwise return None."""
         segmentation_file = self._segmentation_file(image)
         if self.io_handler.isfile(segmentation_file):
-            with self.io_handler.open(segmentation_file, "rb") as fp:
+            with self.io_handler.open_rb(segmentation_file) as fp:
                 with PngImageFile(fp) as png_image:
                     # TODO: We do not write a header tag in the metadata. Might be good safety check.
                     data = np.array(png_image)
@@ -301,7 +297,7 @@ class DataSet(DataSetBase):
         self, filepath: str, features_data: features.FeaturesData
     ) -> None:
         self.io_handler.mkdir_p(self._feature_path())
-        with self.io_handler.open(filepath, "wb") as fwb:
+        with self.io_handler.open_wb(filepath) as fwb:
             features_data.save(fwb, self.config)
 
     def features_exist(self, image: str) -> bool:
@@ -315,7 +311,7 @@ class DataSet(DataSetBase):
             if self.io_handler.isfile(self._feature_file_legacy(image))
             else self._feature_file(image)
         )
-        with self.io_handler.open(features_filepath, "rb") as f:
+        with self.io_handler.open_rb(features_filepath) as f:
             return features.FeaturesData.from_file(f, self.config)
 
     def save_features(self, image: str, features_data: features.FeaturesData) -> None:
@@ -327,13 +323,13 @@ class DataSet(DataSetBase):
     def words_exist(self, image):
         return self.io_handler.isfile(self._words_file(image))
 
-    def load_words(self, image: str) -> np.ndarray:
-        with self.io_handler.open(self._words_file(image), "rb") as f:
+    def load_words(self, image: str) -> NDArray:
+        with self.io_handler.open_rb(self._words_file(image)) as f:
             s = np.load(f)
             return s["words"].astype(np.int32)
 
-    def save_words(self, image: str, words: np.ndarray) -> None:
-        with self.io_handler.open(self._words_file(image), "wb") as f:
+    def save_words(self, image: str, words: NDArray) -> None:
+        with self.io_handler.open_wb(self._words_file(image)) as f:
             np.savez_compressed(f, words=words.astype(np.uint16))
 
     def _matches_path(self) -> str:
@@ -347,16 +343,20 @@ class DataSet(DataSetBase):
     def matches_exists(self, image: str) -> bool:
         return self.io_handler.isfile(self._matches_file(image))
 
-    def load_matches(self, image: str) -> Dict[str, np.ndarray]:
+    def load_matches(self, image: str) -> Dict[str, NDArray]:
         # Prevent pickling of anything except what we strictly need
         # as 'pickle.load' is RCE-prone. Will raise on any class other
         # than the numpy ones we allow.
         class MatchingUnpickler(pickle.Unpickler):
+            # Handle both numpy <2.0 (np.core) and numpy >=2.0 (np._core)
+            _multiarray = (
+                np.core.multiarray if hasattr(np, "core") else np._core.multiarray
+            )
             modules_map = {
-                "numpy.core.multiarray._reconstruct": np.core.multiarray,
-                "numpy.core.multiarray.scalar": np.core.multiarray,
-                "numpy._core.multiarray._reconstruct": np.core.multiarray,
-                "numpy._core.multiarray.scalar": np.core.multiarray,
+                "numpy.core.multiarray._reconstruct": _multiarray,
+                "numpy.core.multiarray.scalar": _multiarray,
+                "numpy._core.multiarray._reconstruct": _multiarray,
+                "numpy._core.multiarray.scalar": _multiarray,
                 "numpy.ndarray": np,
                 "numpy.dtype": np,
             }
@@ -370,20 +370,20 @@ class DataSet(DataSetBase):
                     )
                 return getattr(self.modules_map[classname], name)
 
-        with self.io_handler.open(self._matches_file(image), "rb") as fin:
+        with self.io_handler.open_rb(self._matches_file(image)) as fin:
             matches = MatchingUnpickler(BytesIO(gzip.decompress(fin.read()))).load()
         return matches
 
-    def save_matches(self, image: str, matches: Dict[str, np.ndarray]) -> None:
+    def save_matches(self, image: str, matches: Dict[str, NDArray]) -> None:
         self.io_handler.mkdir_p(self._matches_path())
 
         with BytesIO() as buffer:
             with gzip.GzipFile(fileobj=buffer, mode="w") as fzip:
                 pickle.dump(matches, fzip)
-            with self.io_handler.open(self._matches_file(image), "wb") as fw:
+            with self.io_handler.open_wb(self._matches_file(image)) as fw:
                 fw.write(buffer.getvalue())
 
-    def find_matches(self, im1: str, im2: str) -> np.ndarray:
+    def find_matches(self, im1: str, im2: str) -> NDArray:
         if self.matches_exists(im1):
             im1_matches = self.load_matches(im1)
             if im2 in im1_matches:
@@ -435,7 +435,7 @@ class DataSet(DataSetBase):
         self,
         reconstruction: List[types.Reconstruction],
         filename: Optional[str] = None,
-        minify=False,
+        minify: bool = False,
     ) -> None:
         with self.io_handler.open_wt(self._reconstruction_file(filename)) as fout:
             io.json_dump(io.reconstructions_to_json(reconstruction), fout, minify)
@@ -575,7 +575,7 @@ class DataSet(DataSetBase):
     def append_to_profile_log(self, content: str) -> None:
         """Append content to the profile.log file."""
         path = os.path.join(self.data_path, "profile.log")
-        with self.io_handler.open(path, "a") as fp:
+        with self.io_handler.open_at(path) as fp:
             fp.write(content)
 
     def _report_path(self) -> str:
@@ -591,7 +591,7 @@ class DataSet(DataSetBase):
         filepath = os.path.join(self._report_path(), path)
         self.io_handler.mkdir_p(os.path.dirname(filepath))
         with self.io_handler.open_wt(filepath) as fout:
-            return fout.write(report_str)
+            fout.write(report_str)
 
     def _ply_file(self, filename: Optional[str]) -> str:
         return os.path.join(self.data_path, filename or "reconstruction.ply")
@@ -641,11 +641,29 @@ class DataSet(DataSetBase):
         with self.io_handler.open_wt(self._ground_control_points_file()) as fout:
             io.write_ground_control_points(points, fout)
 
-    def image_as_array(self, image: str) -> np.ndarray:
+    def _stats_file(self) -> str:
+        return os.path.join(self.data_path, "stats", "stats.json")
+
+    def load_stats(self) -> Dict[str, Any]:
+        """Load statistics from stats/stats.json."""
+        stats_file = self._stats_file()
+        if self.io_handler.isfile(stats_file):
+            with self.io_handler.open_rt(stats_file) as fin:
+                return io.json_load(fin)
+        return {}
+
+    def save_stats(self, stats: Dict[str, Any]) -> None:
+        """Save statistics to stats/stats.json."""
+        stats_file = self._stats_file()
+        self.io_handler.mkdir_p(os.path.dirname(stats_file))
+        with self.io_handler.open_wt(stats_file) as fout:
+            io.json_dump(stats, fout)
+
+    def image_as_array(self, image: str) -> NDArray:
         logger.warning("image_as_array() is deprecated. Use load_image() instead.")
         return self.load_image(image)
 
-    def mask_as_array(self, image: str) -> Optional[np.ndarray]:
+    def mask_as_array(self, image: str) -> Optional[NDArray]:
         logger.warning("mask_as_array() is deprecated. Use load_mask() instead.")
         return self.load_mask(image)
 
@@ -707,7 +725,7 @@ class DataSet(DataSetBase):
         )
 
 
-class UndistortedDataSet(object):
+class UndistortedDataSet:
     """Accessors to the undistorted data of a dataset.
 
     Data include undistorted images, masks, and segmentation as well
@@ -720,18 +738,20 @@ class UndistortedDataSet(object):
     base: DataSetBase
     config: Dict[str, Any] = {}
     data_path: str
+    io_handler: io.IoFilesystemBase = io.IoFilesystemDefault()
 
     def __init__(
         self,
         base_dataset: DataSetBase,
         undistorted_data_path: str,
-        io_handler=io.IoFilesystemDefault,
+        io_handler: Optional[io.IoFilesystemBase] = None,
     ) -> None:
         """Init dataset associated to a folder."""
         self.base = base_dataset
         self.config = self.base.config
         self.data_path = undistorted_data_path
-        self.io_handler = io_handler
+        if io_handler is not None:
+            self.io_handler = io_handler
 
     def load_undistorted_shot_ids(self) -> Dict[str, List[str]]:
         filename = os.path.join(self.data_path, "undistorted_shot_ids.json")
@@ -754,11 +774,11 @@ class UndistortedDataSet(object):
             image = p.replace(' ', '') + hashlib.md5(image.encode('utf8')).hexdigest() + ext
         return os.path.join(self._undistorted_image_path(), image)
 
-    def load_undistorted_image(self, image: str) -> np.ndarray:
+    def load_undistorted_image(self, image: str) -> NDArray:
         """Load undistorted image pixels as a numpy array."""
         return self.io_handler.imread(self._undistorted_image_file(image))
 
-    def save_undistorted_image(self, image: str, array: np.ndarray) -> None:
+    def save_undistorted_image(self, image: str, array: NDArray) -> None:
         """Save undistorted image pixels."""
         self.io_handler.mkdir_p(self._undistorted_image_path())
         self.io_handler.imwrite(self._undistorted_image_file(image), array)
@@ -778,13 +798,13 @@ class UndistortedDataSet(object):
         """Check if the undistorted mask file exists."""
         return self.io_handler.isfile(self._undistorted_mask_file(image))
 
-    def load_undistorted_mask(self, image: str) -> np.ndarray:
+    def load_undistorted_mask(self, image: str) -> NDArray:
         """Load undistorted mask pixels as a numpy array."""
         return self.io_handler.imread(
             self._undistorted_mask_file(image), grayscale=True
         )
 
-    def save_undistorted_mask(self, image: str, array: np.ndarray) -> None:
+    def save_undistorted_mask(self, image: str, array: NDArray) -> None:
         """Save the undistorted image mask."""
         self.io_handler.mkdir_p(self._undistorted_mask_path())
         self.io_handler.imwrite(self._undistorted_mask_file(image), array)
@@ -800,10 +820,10 @@ class UndistortedDataSet(object):
         """Check if the undistorted segmentation file exists."""
         return self.io_handler.isfile(self._undistorted_segmentation_file(image))
 
-    def load_undistorted_segmentation(self, image: str) -> np.ndarray:
+    def load_undistorted_segmentation(self, image: str) -> NDArray:
         """Load an undistorted image segmentation."""
         segmentation_file = self._undistorted_segmentation_file(image)
-        with self.io_handler.open(segmentation_file, "rb") as fp:
+        with self.io_handler.open_rb(segmentation_file) as fp:
             with PngImageFile(fp) as png_image:
                 # TODO: We do not write a header tag in the metadata. Might be good safety check.
                 data = np.array(png_image)
@@ -820,12 +840,12 @@ class UndistortedDataSet(object):
                 else:
                     raise IndexError
 
-    def save_undistorted_segmentation(self, image: str, array: np.ndarray) -> None:
+    def save_undistorted_segmentation(self, image: str, array: NDArray) -> None:
         """Save the undistorted image segmentation."""
         self.io_handler.mkdir_p(self._undistorted_segmentation_path())
         self.io_handler.imwrite(self._undistorted_segmentation_file(image), array)
 
-    def load_undistorted_segmentation_mask(self, image: str) -> Optional[np.ndarray]:
+    def load_undistorted_segmentation_mask(self, image: str) -> Optional[NDArray]:
         """Build a mask from the undistorted segmentation.
 
         The mask is non-zero only for pixels with segmentation
@@ -844,7 +864,7 @@ class UndistortedDataSet(object):
 
         return masking.mask_from_segmentation(segmentation, ignore_values)
 
-    def load_undistorted_combined_mask(self, image: str) -> Optional[np.ndarray]:
+    def load_undistorted_combined_mask(self, image: str) -> Optional[NDArray]:
         """Combine undistorted binary mask with segmentation mask.
 
         Return a mask that is non-zero only where the binary
@@ -870,20 +890,20 @@ class UndistortedDataSet(object):
 
     def load_point_cloud(
         self, filename: str = "merged.ply"
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        with self.io_handler.open(self.point_cloud_file(filename), "r") as fp:
+    ) -> Tuple[NDArray, NDArray, NDArray, NDArray]:
+        with self.io_handler.open_rt(self.point_cloud_file(filename)) as fp:
             return io.point_cloud_from_ply(fp)
 
     def save_point_cloud(
         self,
-        points: np.ndarray,
-        normals: np.ndarray,
-        colors: np.ndarray,
-        labels: np.ndarray,
+        points: NDArray,
+        normals: NDArray,
+        colors: NDArray,
+        labels: NDArray,
         filename: str = "merged.ply",
     ) -> None:
         self.io_handler.mkdir_p(self._depthmap_path())
-        with self.io_handler.open(self.point_cloud_file(filename), "w") as fp:
+        with self.io_handler.open_wt(self.point_cloud_file(filename)) as fp:
             io.point_cloud_to_ply(points, normals, colors, labels, fp)
 
     def raw_depthmap_exists(self, image: str) -> bool:
@@ -892,23 +912,23 @@ class UndistortedDataSet(object):
     def save_raw_depthmap(
         self,
         image: str,
-        depth: np.ndarray,
-        plane: np.ndarray,
-        score: np.ndarray,
-        nghbr: np.ndarray,
-        nghbrs: np.ndarray,
+        depth: NDArray,
+        plane: NDArray,
+        score: NDArray,
+        nghbr: NDArray,
+        nghbrs: List[str],
     ) -> None:
         self.io_handler.mkdir_p(self._depthmap_path())
         filepath = self.depthmap_file(image, "raw.npz")
-        with self.io_handler.open(filepath, "wb") as f:
+        with self.io_handler.open_wb(filepath) as f:
             np.savez_compressed(
                 f, depth=depth, plane=plane, score=score, nghbr=nghbr, nghbrs=nghbrs
             )
 
     def load_raw_depthmap(
         self, image: str
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        with self.io_handler.open(self.depthmap_file(image, "raw.npz"), "rb") as f:
+    ) -> Tuple[NDArray, NDArray, NDArray, NDArray, List[str]]:
+        with self.io_handler.open_rb(self.depthmap_file(image, "raw.npz")) as f:
             o = np.load(f)
             return o["depth"], o["plane"], o["score"], o["nghbr"], o["nghbrs"]
 
@@ -916,17 +936,15 @@ class UndistortedDataSet(object):
         return self.io_handler.isfile(self.depthmap_file(image, "clean.npz"))
 
     def save_clean_depthmap(
-        self, image: str, depth: np.ndarray, plane: np.ndarray, score: np.ndarray
+        self, image: str, depth: NDArray, plane: NDArray, score: NDArray
     ) -> None:
         self.io_handler.mkdir_p(self._depthmap_path())
         filepath = self.depthmap_file(image, "clean.npz")
-        with self.io_handler.open(filepath, "wb") as f:
+        with self.io_handler.open_wb(filepath) as f:
             np.savez_compressed(f, depth=depth, plane=plane, score=score)
 
-    def load_clean_depthmap(
-        self, image: str
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-        with self.io_handler.open(self.depthmap_file(image, "clean.npz"), "rb") as f:
+    def load_clean_depthmap(self, image: str) -> Tuple[NDArray, NDArray, NDArray]:
+        with self.io_handler.open_rb(self.depthmap_file(image, "clean.npz")) as f:
             o = np.load(f)
             return o["depth"], o["plane"], o["score"]
 
@@ -936,14 +954,14 @@ class UndistortedDataSet(object):
     def save_pruned_depthmap(
         self,
         image: str,
-        points: np.ndarray,
-        normals: np.ndarray,
-        colors: np.ndarray,
-        labels: np.ndarray,
+        points: NDArray,
+        normals: NDArray,
+        colors: NDArray,
+        labels: NDArray,
     ) -> None:
         self.io_handler.mkdir_p(self._depthmap_path())
         filepath = self.depthmap_file(image, "pruned.npz")
-        with self.io_handler.open(filepath, "wb") as f:
+        with self.io_handler.open_wb(filepath) as f:
             np.savez_compressed(
                 f,
                 points=points,
@@ -954,8 +972,8 @@ class UndistortedDataSet(object):
 
     def load_pruned_depthmap(
         self, image: str
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        with self.io_handler.open(self.depthmap_file(image, "pruned.npz"), "rb") as f:
+    ) -> Tuple[NDArray, NDArray, NDArray, NDArray]:
+        with self.io_handler.open_rb(self.depthmap_file(image, "pruned.npz")) as f:
             o = np.load(f)
             return (
                 o["points"],
@@ -995,8 +1013,12 @@ class UndistortedDataSet(object):
 def invent_reference_from_gps_and_gcp(
     data: DataSetBase, images: Optional[List[str]] = None
 ) -> geo.TopocentricConverter:
-    lat, lon, alt = 0.0, 0.0, 0.0
-    wlat, wlon, walt = 0.0, 0.0, 0.0
+    """Invent the reference from the weighted average of lat/lon measurements.
+    Most of the time the altitude provided in the metadata is inaccurate, thus
+    the reference altitude is set equal to 0 regardless of the altitude measurements.
+    """
+    lat, lon = 0.0, 0.0
+    wlat, wlon = 0.0, 0.0
     if images is None:
         images = data.images()
     for image in images:
@@ -1007,27 +1029,18 @@ def invent_reference_from_gps_and_gcp(
             lon += w * d["gps"]["longitude"]
             wlat += w
             wlon += w
-            if "altitude" in d["gps"]:
-                alt += w * d["gps"]["altitude"]
-                walt += w
 
     if not wlat and not wlon:
         for gcp in data.load_ground_control_points():
             if gcp.lla:
                 lat += gcp.lla["latitude"]
                 lon += gcp.lla["longitude"]
-                wlat += 1
-                wlon += 1
-
-                if gcp.has_altitude:
-                    alt += gcp.lla["altitude"]
-                    walt += 1
+                wlat += 1.0
+                wlon += 1.0
 
     if wlat:
         lat /= wlat
     if wlon:
         lon /= wlon
-    if walt:
-        alt /= walt
 
-    return geo.TopocentricConverter(lat, lon, 0)  # Set altitude manually.
+    return geo.TopocentricConverter(lat, lon, 0)

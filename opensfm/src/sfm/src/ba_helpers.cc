@@ -4,10 +4,12 @@
 #include <map/ground_control_points.h>
 #include <map/map.h>
 #include <sfm/ba_helpers.h>
+#include <sfm/retriangulation.h>
 
 #include <chrono>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 #include "geo/geo.h"
 #include "map/defines.h"
@@ -118,17 +120,32 @@ py::tuple BAHelpers::BundleLocal(
     const std::unordered_map<map::RigCameraId, map::RigCamera>&
         rig_camera_priors,
     const AlignedVector<map::GroundControlPoint>& gcp,
-    const map::ShotId& central_shot_id, const py::dict& config) {
+    const map::ShotId& central_shot_id, int grid_size, const py::dict& config) {
   py::dict report;
-  const auto start = std::chrono::high_resolution_clock::now();
+
+  const auto timer_neighborhood_start =
+      std::chrono::high_resolution_clock::now();
   auto neighborhood = ShotNeighborhood(
       map, central_shot_id, config["local_bundle_radius"].cast<size_t>(),
       config["local_bundle_min_common_points"].cast<size_t>(),
       config["local_bundle_max_shots"].cast<size_t>());
+  const auto timer_neighborhood_end = std::chrono::high_resolution_clock::now();
   auto& interior = neighborhood.first;
   auto& boundary = neighborhood.second;
 
+  // Convert subset to set for fast lookup
+  std::unordered_set<map::ShotId> all_shots_interior;
+  for (auto* shot : interior) {
+    all_shots_interior.insert(shot->GetId());
+  }
+  const auto timer_grid_start = std::chrono::high_resolution_clock::now();
+  auto selection = SelectTracksGrid(map, all_shots_interior, grid_size);
+  const auto& subset = selection.selected_tracks;
+  auto& to_retriangulate = selection.other_tracks;
+  const auto timer_grid_end = std::chrono::high_resolution_clock::now();
+
   // set up BA
+  const auto start = std::chrono::high_resolution_clock::now();
   auto ba = bundle::BundleAdjuster();
   ba.SetUseAnalyticDerivatives(
       config["bundle_analytic_derivatives"].cast<bool>());
@@ -143,8 +160,6 @@ py::tuple BAHelpers::BundleLocal(
   std::unordered_set<map::Shot*> int_and_bound(interior.cbegin(),
                                                interior.cend());
   int_and_bound.insert(boundary.cbegin(), boundary.cend());
-  std::unordered_set<map::Landmark*> points;
-  py::list pt_ids;
 
   constexpr bool point_constant{false};
   constexpr bool rig_camera_constant{true};
@@ -215,33 +230,61 @@ py::tuple BAHelpers::BundleLocal(
     }
   }
 
+  double t_projections = 0;
+  const auto t_pts_start = std::chrono::high_resolution_clock::now();
+
+  // Retrieve a mapping between map shots and bundle shots we're just created
+  std::unordered_map<map::Shot*, bundle::Shot*> shot_lookup;
+  shot_lookup.reserve(interior.size() + boundary.size());
   for (auto* shot : interior) {
-    // Add all points of the shots that are in the interior
-    for (const auto& lm_obs : shot->GetLandmarkObservations()) {
-      auto* lm = lm_obs.first;
-      if (points.count(lm) == 0) {
-        points.insert(lm);
-        pt_ids.append(lm->id_);
-        ba.AddPoint(lm->id_, lm->GetGlobalPos(), point_constant);
-      }
-      const auto& obs = lm_obs.second;
-      ba.AddPointProjectionObservation(shot->id_, lm_obs.first->id_, obs.point,
-                                       obs.scale);
-    }
+    shot_lookup[shot] = ba.GetShotRaw(shot->id_);
   }
   for (auto* shot : boundary) {
-    for (const auto& lm_obs : shot->GetLandmarkObservations()) {
-      auto* lm = lm_obs.first;
-      if (points.count(lm) > 0) {
-        const auto& obs = lm_obs.second;
-        ba.AddPointProjectionObservation(shot->id_, lm_obs.first->id_,
-                                         obs.point, obs.scale);
+    shot_lookup[shot] = ba.GetShotRaw(shot->id_);
+  }
+
+  // Run over selected tracks only and add all their observations
+  std::unordered_set<map::Landmark*> points;
+  py::list pt_ids;
+  size_t added_landmarks = 0;
+  size_t added_reprojections = 0;
+  for (const auto& selected_track_id : subset) {
+    auto& lm = map.GetLandmark(selected_track_id);
+
+    auto* ba_point = ba.AddPoint(lm.id_, lm.GetGlobalPos(), point_constant);
+
+    points.insert(&lm);
+    pt_ids.append(lm.id_);
+    ++added_landmarks;
+
+    for (const auto& obs_pair : lm.GetObservations()) {
+      auto* shot = obs_pair.first;
+      auto* obs = obs_pair.second;
+
+      auto s_it = shot_lookup.find(shot);
+      if (s_it == shot_lookup.end()) {
+        throw std::runtime_error("Shot " + shot->id_ +
+                                 " not found in bundle adjuster");
       }
+      ba.AddPointProjectionObservationRaw(s_it->second, ba_point, obs->point,
+                                          obs->scale, obs->depth_prior);
+      ++added_reprojections;
     }
   }
 
+  t_projections += std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::high_resolution_clock::now() - t_pts_start)
+                       .count() /
+                   1000000.0;
+
   if (config["bundle_use_gcp"].cast<bool>() && !gcp.empty()) {
+    const auto t_gcp_start = std::chrono::high_resolution_clock::now();
     AddGCPToBundle(ba, map, gcp, config);
+    t_projections +=
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::high_resolution_clock::now() - t_gcp_start)
+            .count() /
+        1000000.0;
   }
 
   ba.SetPointProjectionLossFunction(
@@ -249,6 +292,7 @@ py::tuple BAHelpers::BundleLocal(
       config["loss_function_threshold"].cast<double>());
   ba.SetInternalParametersPriorSD(
       config["exif_focal_sd"].cast<double>(),
+      config["aspect_ratio_sd"].cast<double>(),
       config["principal_point_sd"].cast<double>(),
       config["radial_distortion_k1_sd"].cast<double>(),
       config["radial_distortion_k2_sd"].cast<double>(),
@@ -261,7 +305,7 @@ py::tuple BAHelpers::BundleLocal(
 
   ba.SetNumThreads(config["processes"].cast<int>());
   ba.SetMaxNumIterations(10);
-  ba.SetLinearSolverType("DENSE_SCHUR");
+  ba.SetLinearSolverType("SPARSE_SCHUR");
   const auto timer_setup = std::chrono::high_resolution_clock::now();
 
   {
@@ -281,11 +325,32 @@ py::tuple BAHelpers::BundleLocal(
     point->SetGlobalPos(pt.GetValue());
     point->SetReprojectionErrors(pt.reprojection_errors);
   }
+
   const auto timer_teardown = std::chrono::high_resolution_clock::now();
+  sfm::retriangulation::Triangulate(
+      map, to_retriangulate, config["triangulation_threshold"].cast<float>(),
+      config["triangulation_min_ray_angle"].cast<float>(),
+      config["triangulation_min_depth"].cast<float>(),
+      config["processes"].cast<int>());
+  const auto timer_triangulate = std::chrono::high_resolution_clock::now();
+
   report["brief_report"] = ba.BriefReport();
   report["wall_times"] = py::dict();
+  report["wall_times"]["neighborhood"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          timer_neighborhood_end - timer_neighborhood_start)
+          .count() /
+      1000000.0;
   report["wall_times"]["setup"] =
       std::chrono::duration_cast<std::chrono::microseconds>(timer_setup - start)
+          .count() /
+      1000000.0;
+  report["wall_times"]["setup_projections"] = t_projections;
+  report["wall_times"]["setup_other"] =
+      report["wall_times"]["setup"].cast<double>() - t_projections;
+  report["wall_times"]["grid"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(timer_grid_end -
+                                                            timer_grid_start)
           .count() /
       1000000.0;
   report["wall_times"]["run"] =
@@ -298,20 +363,27 @@ py::tuple BAHelpers::BundleLocal(
                                                             timer_run)
           .count() /
       1000000.0;
+  report["wall_times"]["triangulate"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(timer_triangulate -
+                                                            timer_teardown)
+          .count() /
+      1000000.0;
+  report["num_images"] = interior.size();
   report["num_interior_images"] = interior.size();
   report["num_boundary_images"] = boundary.size();
   report["num_other_images"] =
       map.NumberOfShots() - interior.size() - boundary.size();
+  report["num_points"] = added_landmarks;
+  report["num_reprojections"] = added_reprojections;
   return py::make_tuple(pt_ids, report);
 }
 
 bool BAHelpers::TriangulateGCP(
     const map::GroundControlPoint& point,
     const std::unordered_map<map::ShotId, map::Shot>& shots,
-    Vec3d& coordinates) {
-  constexpr auto reproj_threshold{1.0};
+    float reproj_threshold, Vec3d& coordinates) {
   constexpr auto min_ray_angle = 0.1 * M_PI / 180.0;
-  constexpr auto max_ray_angle = M_PI - min_ray_angle;
+  constexpr auto min_depth = 1e-3;  // Assume GCPs 1mm+ away from the camera
   MatX3d os, bs;
   size_t added = 0;
   coordinates = Vec3d::Zero();
@@ -332,8 +404,8 @@ bool BAHelpers::TriangulateGCP(
   os.conservativeResize(added, Eigen::NoChange);
   if (added >= 2) {
     const std::vector<double> thresholds(added, reproj_threshold);
-    const auto& res = geometry::TriangulateBearingsMidpoint(os, bs, thresholds,
-                                                            min_ray_angle, max_ray_angle);
+    const auto& res = geometry::TriangulateBearingsMidpoint(
+        os, bs, thresholds, min_ray_angle, min_depth);
     coordinates = res.second;
     return res.first;
   }
@@ -347,35 +419,41 @@ size_t BAHelpers::AddGCPToBundle(
   const auto& reference = map.GetTopocentricConverter();
   const auto& shots = map.GetShots();
 
-  const auto dominant_terms = ba.GetRigInstances().size() +
-                              ba.GetProjectionsCount() +
-                              ba.GetRelativeMotionsCount();
-
-  size_t total_terms = 0;
-  for (const auto& point : gcp) {
-    Vec3d coordinates;
-    if (TriangulateGCP(point, shots, coordinates) || !point.lla_.empty()) {
-      ++total_terms;
-    }
-    for (const auto& obs : point.observations_) {
-      total_terms += (shots.count(obs.shot_id_) > 0);
-    }
-  }
-
-  double global_weight = config["gcp_global_weight"].cast<double>() *
-                         dominant_terms / std::max<size_t>(1, total_terms);
+  const float reproj_threshold =
+      config["gcp_reprojection_error_threshold"].cast<float>();
 
   size_t added_gcp_observations = 0;
   for (const auto& point : gcp) {
     const auto point_id = "gcp-" + point.id_;
     Vec3d coordinates;
-    if (!TriangulateGCP(point, shots, coordinates)) {
+    if (!TriangulateGCP(point, shots, reproj_threshold, coordinates)) {
       if (!point.lla_.empty()) {
         coordinates = reference.ToTopocentric(point.GetLlaVec3d());
       } else {
         continue;
       }
     }
+
+    double avg_observations = 0.;
+    int valid_shots = 0;
+    for (const auto& obs : point.observations_) {
+      const auto shot_it = shots.find(obs.shot_id_);
+      if (shot_it != shots.end()) {
+        const auto& shot = (shot_it->second);
+        avg_observations += shot.GetLandmarkObservations().size();
+        ++valid_shots;
+      }
+    }
+
+    if (!valid_shots) {
+      continue;
+    }
+    avg_observations /= valid_shots;
+    const double weight_factor = std::sqrt(std::max(1.0, avg_observations));
+
+    const double prior_balance = std::max(1.0, (double)valid_shots);
+    const double prior_weight = config["gcp_global_weight"].cast<double>() *
+                                weight_factor * prior_balance;
     constexpr auto point_constant{false};
     ba.AddPoint(point_id, coordinates, point_constant);
     if (!point.lla_.empty()) {
@@ -383,21 +461,96 @@ size_t BAHelpers::AddGCPToBundle(
                                    config["gcp_horizontal_sd"].cast<double>(),
                                    config["gcp_vertical_sd"].cast<double>());
       ba.AddPointPrior(point_id, reference.ToTopocentric(point.GetLlaVec3d()),
-                       point_std / global_weight, point.has_altitude_);
+                       point_std / prior_weight, point.has_altitude_);
     }
 
     // Now iterate through the observations
+    const double obs_weight = config["gcp_global_weight"].cast<double>() *
+                              weight_factor * prior_balance;
     for (const auto& obs : point.observations_) {
       const auto& shot_id = obs.shot_id_;
       if (shots.count(shot_id) > 0) {
         constexpr double scale{0.001};
         ba.AddPointProjectionObservation(shot_id, point_id, obs.projection_,
-                                         scale / global_weight);
+                                         scale / obs_weight);
         ++added_gcp_observations;
       }
     }
   }
   return added_gcp_observations;
+}
+
+BAHelpers::TracksSelection BAHelpers::SelectTracksGrid(
+    map::Map& map, const std::unordered_set<map::ShotId>& shot_ids,
+    size_t grid_size) {
+  TracksSelection selection;
+  if (shot_ids.empty() || grid_size <= 1) {
+    return selection;
+  }
+
+  const auto default_num_tracks = grid_size * grid_size * shot_ids.size() / 2;
+  auto& set_selected_tracks = selection.selected_tracks;
+  set_selected_tracks.reserve(default_num_tracks);
+  auto& set_other_tracks = selection.other_tracks;
+  set_other_tracks.reserve(default_num_tracks * 4);
+
+  // Prepare grid cells: each cell holds the longest track (by observation
+  // count)
+  std::vector<std::pair<map::TrackId, size_t>> grid(grid_size * grid_size,
+                                                    {"", 0});
+
+  // For each shot (image)
+  for (const auto& shot_id : shot_ids) {
+    const auto& shot = map.GetShot(shot_id);
+    const int width = shot.GetCamera()->width;
+    const int height = shot.GetCamera()->height;
+    if (width <= 0 || height <= 0) {
+      continue;
+    }
+
+    std::fill(grid.begin(), grid.end(),
+              std::make_pair<map::TrackId, size_t>("", 0));
+
+    // For each observation in the shot
+    for (const auto& lm_obs : shot.GetLandmarkObservations()) {
+      auto* lm = lm_obs.first;
+      const auto& obs = lm_obs.second;
+      set_other_tracks.insert(lm->id_);
+
+      // Get normalized coordinates [0,1]
+      const auto normalize = std::max(width, height);
+      double x = (obs.point(0) * normalize + width * 0.5) / width;
+      double y = (obs.point(1) * normalize + height * 0.5) / height;
+      // Clamp to [0,1]
+      x = std::max(0.0, std::min(1.0, x));
+      y = std::max(0.0, std::min(1.0, y));
+      // Compute grid cell
+      const int gx = std::min(static_cast<int>(x * grid_size),
+                              static_cast<int>(grid_size - 1));
+      const int gy = std::min(static_cast<int>(y * grid_size),
+                              static_cast<int>(grid_size - 1));
+      // Track length = number of observations
+      const size_t track_len = lm->GetObservations().size();
+      // Keep the longest track in this cell
+      if (track_len > grid[gx + gy * grid_size].second &&
+          set_selected_tracks.count(lm->id_) == 0) {
+        grid[gx + gy * grid_size] = {lm->id_, track_len};
+      }
+    }
+
+    // Add selected tracks for this shot
+    for (int i = 0; i < static_cast<int>(grid_size * grid_size); ++i) {
+      const auto& track_id = grid[i].first;
+      if (!track_id.empty()) {
+        set_selected_tracks.insert(track_id);
+      }
+    }
+  }
+  for (const auto& selected_track : set_selected_tracks) {
+    set_other_tracks.erase(selected_track);
+  }
+
+  return selection;
 }
 
 py::dict BAHelpers::BundleShotPoses(
@@ -424,10 +577,16 @@ py::dict BAHelpers::BundleShotPoses(
     rig_instances_ids.insert(shot.GetRigInstanceId());
   }
   std::unordered_set<map::RigCameraId> rig_cameras_ids;
+  std::unordered_set<map::CameraId> cameras_ids;
   for (const auto& rig_instance_id : rig_instances_ids) {
     auto& instance = map.GetRigInstance(rig_instance_id);
     for (const auto& shot_n_rig_camera : instance.GetRigCameras()) {
-      rig_cameras_ids.insert(shot_n_rig_camera.second->id);
+      const auto rig_camera_id = shot_n_rig_camera.second->id;
+      rig_cameras_ids.insert(rig_camera_id);
+
+      const auto shot_id = shot_n_rig_camera.first;
+      const auto camera_id = map.GetShot(shot_id).GetCamera()->id;
+      cameras_ids.insert(camera_id);
     }
   }
 
@@ -438,16 +597,10 @@ py::dict BAHelpers::BundleShotPoses(
                     rig_camera_priors.at(rig_camera_id).pose, fix_rig_camera);
   }
 
-  std::unordered_set<map::CameraId> added_cameras;
-  for (const auto& shot_id : shot_ids) {
-    const auto& shot = map.GetShot(shot_id);
-    const auto& cam = *shot.GetCamera();
-    if (added_cameras.find(cam.id) != added_cameras.end()) {
-      continue;
-    }
-    const auto& cam_prior = camera_priors.at(cam.id);
-    ba.AddCamera(cam.id, cam, cam_prior, fix_cameras);
-    added_cameras.insert(cam.id);
+  for (const auto& camera_id : cameras_ids) {
+    const auto& cam = map.GetCamera(camera_id);
+    const auto& cam_prior = camera_priors.at(camera_id);
+    ba.AddCamera(camera_id, cam, cam_prior, fix_cameras);
   }
 
   std::unordered_set<map::Landmark*> landmarks;
@@ -483,7 +636,7 @@ py::dict BAHelpers::BundleShotPoses(
       shot_cameras[shot_id] = shot.GetCamera()->id;
       shot_rig_cameras[shot_id] = shot_n_rig_camera.second->id;
 
-      const auto is_fixed = shot_ids.find(shot_id) != shot_ids.end();
+      const auto is_fixed = shot_ids.find(shot_id) == shot_ids.end();
       if (!is_fixed) {
         if (config["bundle_use_gps"].cast<bool>()) {
           const auto pos = shot.GetShotMeasurements().gps_position_;
@@ -513,20 +666,27 @@ py::dict BAHelpers::BundleShotPoses(
   }
 
   // add observations
+  const auto t_projections_start = std::chrono::high_resolution_clock::now();
   for (const auto& shot_id : shot_ids) {
     const auto& shot = map.GetShot(shot_id);
     for (const auto& lm_obs : shot.GetLandmarkObservations()) {
       const auto& obs = lm_obs.second;
       ba.AddPointProjectionObservation(shot.id_, lm_obs.first->id_, obs.point,
-                                       obs.scale);
+                                       obs.scale, obs.depth_prior);
     }
   }
+  const double t_projections =
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::high_resolution_clock::now() - t_projections_start)
+          .count() /
+      1000000.0;
 
   ba.SetPointProjectionLossFunction(
       config["loss_function"].cast<std::string>(),
       config["loss_function_threshold"].cast<double>());
   ba.SetInternalParametersPriorSD(
       config["exif_focal_sd"].cast<double>(),
+      config["aspect_ratio_sd"].cast<double>(),
       config["principal_point_sd"].cast<double>(),
       config["radial_distortion_k1_sd"].cast<double>(),
       config["radial_distortion_k2_sd"].cast<double>(),
@@ -562,6 +722,9 @@ py::dict BAHelpers::BundleShotPoses(
       std::chrono::duration_cast<std::chrono::microseconds>(timer_setup - start)
           .count() /
       1000000.0;
+  report["wall_times"]["setup_projections"] = t_projections;
+  report["wall_times"]["setup_other"] =
+      report["wall_times"]["setup"].cast<double>() - t_projections;
   report["wall_times"]["run"] =
       std::chrono::duration_cast<std::chrono::microseconds>(timer_run -
                                                             timer_setup)
@@ -580,8 +743,21 @@ py::dict BAHelpers::Bundle(
     const std::unordered_map<map::CameraId, geometry::Camera>& camera_priors,
     const std::unordered_map<map::RigCameraId, map::RigCamera>&
         rig_camera_priors,
-    const AlignedVector<map::GroundControlPoint>& gcp, const py::dict& config) {
+    const AlignedVector<map::GroundControlPoint>& gcp, int grid_size,
+    const py::dict& config) {
   py::dict report;
+
+  // Get shot ids from the map
+  const auto& all_shots = map.GetShots();
+  std::unordered_set<map::ShotId> shot_ids;
+  for (const auto& shot_pair : all_shots) {
+    shot_ids.insert(shot_pair.first);
+  }
+  const auto timer_grid_start = std::chrono::high_resolution_clock::now();
+  auto selection = SelectTracksGrid(map, shot_ids, grid_size);
+  const auto& subset = selection.selected_tracks;
+  auto& to_retriangulate = selection.other_tracks;
+  const auto timer_grid_end = std::chrono::high_resolution_clock::now();
 
   auto ba = bundle::BundleAdjuster();
   const bool fix_cameras = !config["optimize_camera_parameters"].cast<bool>();
@@ -596,9 +772,25 @@ py::dict BAHelpers::Bundle(
     ba.AddCamera(cam.id, cam, cam_prior, fix_cameras);
   }
 
-  for (const auto& pt_pair : map.GetLandmarks()) {
-    const auto& pt = pt_pair.second;
-    ba.AddPoint(pt.id_, pt.GetGlobalPos(), false);
+  // Only add points in the subset
+  std::unordered_map<const map::Landmark*, bundle::Point*> landmark_lookup;
+  landmark_lookup.reserve(subset.empty() ? map.GetLandmarks().size()
+                                         : subset.size());
+
+  // Two different - yet similar - loops to avoid
+  // one dummy structure allocation
+  if (!subset.empty()) {
+    for (const auto& track_id : subset) {
+      const auto& pt = map.GetLandmark(track_id);
+      ba.AddPoint(pt.id_, pt.GetGlobalPos(), false);
+      landmark_lookup[&pt] = ba.GetPointRaw(pt.id_);
+    }
+  } else {
+    for (const auto& lm_pair : map.GetLandmarks()) {
+      const auto& pt = lm_pair.second;
+      ba.AddPoint(pt.id_, pt.GetGlobalPos(), false);
+      landmark_lookup[&pt] = ba.GetPointRaw(pt.id_);
+    }
   }
 
   auto align_method = config["align_method"].cast<std::string>();
@@ -621,8 +813,13 @@ py::dict BAHelpers::Bundle(
 
   // setup rig cameras
   constexpr size_t kMinRigInstanceForAdjust{10};
+  const size_t shots_per_rig_cameras =
+      map.GetRigCameras().size() > 0
+          ? static_cast<size_t>(map.GetShots().size() /
+                                map.GetRigCameras().size())
+          : 1;
   const auto lock_rig_camera =
-      map.GetRigInstances().size() <= kMinRigInstanceForAdjust;
+      shots_per_rig_cameras <= kMinRigInstanceForAdjust;
   for (const auto& camera_pair : map.GetRigCameras()) {
     // could be set to false (not locked) the day we expose leverarm adjustment
     const bool is_leverarm =
@@ -653,6 +850,13 @@ py::dict BAHelpers::Bundle(
         const auto pos = shot.GetShotMeasurements().gps_position_;
         const auto acc = shot.GetShotMeasurements().gps_accuracy_;
         if (pos.HasValue() && acc.HasValue()) {
+          if (acc.Value() <= 0) {
+            throw std::runtime_error(
+                "Shot " + shot.GetId() +
+                " has an accuracy <= 0: " + std::to_string(acc.Value()) +
+                ". Try modifying "
+                "your input parser to filter such values.");
+          }
           average_position += pos.Value();
           average_std += acc.Value();
           ++gps_count;
@@ -672,28 +876,55 @@ py::dict BAHelpers::Bundle(
     }
   }
 
+  double t_projections = 0;
+  const auto t_obs_start = std::chrono::high_resolution_clock::now();
+  size_t added_reprojections = 0;
+
+  std::unordered_map<const map::Shot*, bundle::Shot*> shot_lookup;
+  shot_lookup.reserve(map.GetShots().size());
+
   for (const auto& shot_pair : map.GetShots()) {
     const auto& shot = shot_pair.second;
 
-    // that one doesn't have it's rig counterpart
     if (do_add_align_vector) {
       constexpr double std_dev = 1e-3;
       ba.AddAbsoluteUpVector(shot.id_, up_vector, std_dev);
     }
+    shot_lookup[&shot] = ba.GetShotRaw(shot.id_);
+  }
 
-    // setup observations for any shot type
-    for (const auto& lm_obs : shot.GetLandmarkObservations()) {
-      const auto& obs = lm_obs.second;
-      ba.AddPointProjectionObservation(shot.id_, lm_obs.first->id_, obs.point,
-                                       obs.scale);
+  for (const auto& lm_pair : landmark_lookup) {
+    const map::Landmark* lm = lm_pair.first;
+    bundle::Point* bp = lm_pair.second;
+
+    for (const auto& obs_entry : lm->GetObservations()) {
+      map::Shot* shot = obs_entry.first;
+      const map::Observation* obs = obs_entry.second;
+
+      auto s_it = shot_lookup.find(shot);
+      if (s_it != shot_lookup.end()) {
+        ba.AddPointProjectionObservationRaw(s_it->second, bp, obs->point,
+                                            obs->scale, obs->depth_prior);
+        ++added_reprojections;
+      }
     }
   }
+  t_projections += std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::high_resolution_clock::now() - t_obs_start)
+                       .count() /
+                   1000000.0;
 
   if (config["bundle_use_gcp"].cast<bool>() && !gcp.empty()) {
+    const auto t_gcp_start = std::chrono::high_resolution_clock::now();
     AddGCPToBundle(ba, map, gcp, config);
+    t_projections +=
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::high_resolution_clock::now() - t_gcp_start)
+            .count() /
+        1000000.0;
   }
 
-  if (config["bundle_compensate_gps_bias"].cast<bool>()) {
+  if (config["bundle_compensate_gps_bias"].cast<bool>() && !gcp.empty()) {
     const auto& biases = map.GetBiases();
     for (const auto& camera : map.GetCameras()) {
       ba.SetCameraBias(camera.first, biases.at(camera.first));
@@ -705,6 +936,7 @@ py::dict BAHelpers::Bundle(
       config["loss_function_threshold"].cast<double>());
   ba.SetInternalParametersPriorSD(
       config["exif_focal_sd"].cast<double>(),
+      config["aspect_ratio_sd"].cast<double>(),
       config["principal_point_sd"].cast<double>(),
       config["radial_distortion_k1_sd"].cast<double>(),
       config["radial_distortion_k2_sd"].cast<double>(),
@@ -728,12 +960,29 @@ py::dict BAHelpers::Bundle(
   const auto timer_run = std::chrono::high_resolution_clock::now();
 
   BundleToMap(ba, map, !fix_cameras);
-
   const auto timer_teardown = std::chrono::high_resolution_clock::now();
+
+  if (!subset.empty()) {
+    sfm::retriangulation::Triangulate(
+        map, to_retriangulate, config["triangulation_threshold"].cast<float>(),
+        config["triangulation_min_ray_angle"].cast<float>(),
+        config["triangulation_min_depth"].cast<float>(),
+        config["processes"].cast<int>());
+  }
+  const auto timer_triangulate = std::chrono::high_resolution_clock::now();
+
   report["brief_report"] = ba.BriefReport();
   report["wall_times"] = py::dict();
   report["wall_times"]["setup"] =
       std::chrono::duration_cast<std::chrono::microseconds>(timer_setup - start)
+          .count() /
+      1000000.0;
+  report["wall_times"]["setup_projections"] = t_projections;
+  report["wall_times"]["setup_other"] =
+      report["wall_times"]["setup"].cast<double>() - t_projections;
+  report["wall_times"]["grid"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(timer_grid_end -
+                                                            timer_grid_start)
           .count() /
       1000000.0;
   report["wall_times"]["run"] =
@@ -746,6 +995,15 @@ py::dict BAHelpers::Bundle(
                                                             timer_run)
           .count() /
       1000000.0;
+  report["wall_times"]["triangulate"] =
+      std::chrono::duration_cast<std::chrono::microseconds>(timer_triangulate -
+                                                            timer_teardown)
+          .count() /
+      1000000.0;
+  report["num_images"] = map.GetShots().size();
+  report["num_points"] =
+      subset.empty() ? map.GetLandmarks().size() : subset.size();
+  report["num_reprojections"] = added_reprojections;
   return report;
 }
 
@@ -795,10 +1053,15 @@ void BAHelpers::BundleToMap(const bundle::BundleAdjuster& bundle_adjuster,
 
   // Update points
   for (auto& point : output_map.GetLandmarks()) {
-    const auto& pt = bundle_adjuster.GetPoint(point.first);
+    if (!bundle_adjuster.HasPoint(point.first)) {
+      continue;
+    }
+    auto pt = bundle_adjuster.GetPoint(point.first);
     if (!pt.GetValue().allFinite()) {
-      throw std::runtime_error("Point " + point.first +
-                               " has either NaN or INF values.");
+      // set large reprojection errors
+      for (auto& proj_error : pt.reprojection_errors) {
+        proj_error.second.setConstant(1.0);
+      }
     }
     point.second.SetGlobalPos(pt.GetValue());
     point.second.SetReprojectionErrors(pt.reprojection_errors);
@@ -828,9 +1091,14 @@ void BAHelpers::AlignmentConstraints(
   // Triangulated vs measured points
   if (!gcp.empty() && config["bundle_use_gcp"].cast<bool>()) {
     for (const auto& point : gcp) {
-      if (point.lla_.empty()) continue;
+      if (point.lla_.empty()) {
+        continue;
+      }
       Vec3d coordinates;
-      if (TriangulateGCP(point, shots, coordinates)) {
+      if (TriangulateGCP(
+              point, shots,
+              config["gcp_reprojection_error_threshold"].cast<float>(),
+              coordinates)) {
         Xp.row(idx) = topocentricConverter.ToTopocentric(point.GetLlaVec3d());
         X.row(idx) = coordinates;
         ++idx;

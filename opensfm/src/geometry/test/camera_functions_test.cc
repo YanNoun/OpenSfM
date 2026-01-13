@@ -5,8 +5,6 @@
 #include <gtest/gtest.h>
 
 #include <Eigen/Dense>
-#include <random>
-#include <unsupported/Eigen/AutoDiff>
 
 class FunctionFixture : public ::testing::Test {
  public:
@@ -117,7 +115,7 @@ TEST_F(FunctionFixture, EvaluatesDerivativesCorrectly) {
   ASSERT_NEAR(expected, evaluated, 1e-20);
 
   /* Jacobian ordering : d_input | d_parameters */
-  typedef Eigen::AutoDiffScalar<VecXd> AScalar;
+  using AScalar = Eigen::AutoDiffScalar<VecXd>;
   VecX<AScalar> eval_adiff(1);
   eval_adiff(0).value() = in[0];
   eval_adiff(0).derivatives() = VecXd::Unit(7, 0);
@@ -165,7 +163,7 @@ TEST_F(PoseFixture, EvaluatesCorrectly) {
 }
 
 TEST_F(PoseFixture, EvaluatesAllDerivativesCorrectly) {
-  typedef Eigen::AutoDiffScalar<VecXd> AScalar;
+  using AScalar = Eigen::AutoDiffScalar<VecXd>;
 
   VecX<AScalar> point_adiff(3);
   constexpr int size = 9;
@@ -199,7 +197,7 @@ TEST_F(PoseFixture, EvaluatesAllDerivativesCorrectly) {
 }
 
 TEST_F(PoseFixture, EvaluatesPointDerivativesCorrectly) {
-  typedef Eigen::AutoDiffScalar<VecXd> AScalar;
+  using AScalar = Eigen::AutoDiffScalar<VecXd>;
 
   VecX<AScalar> point_adiff(3);
 
@@ -286,8 +284,8 @@ class CameraDerivativesFixture : public ::testing::Test {
       for (int j = 0; j < size_params; ++j) {
         ASSERT_NEAR(projection_expected[i].derivatives()(j), jacobian(i, j),
                     eps)
-          << "where (i, j) = (" << testing::PrintToString(i)
-          << ", " << testing::PrintToString(j) << ')';
+            << "where (i, j) = (" << testing::PrintToString(i) << ", "
+            << testing::PrintToString(j) << ')';
       }
       ASSERT_NEAR(projection_expected[i].value(), projected[i], eps);
     }
@@ -305,7 +303,7 @@ class CameraDerivativesFixture : public ::testing::Test {
   Vec2d principal_point;
 
   double point[3];
-  typedef Eigen::AutoDiffScalar<VecXd> AScalar;
+  using AScalar = Eigen::AutoDiffScalar<VecXd>;
   AScalar point_adiff[3];
   VecX<AScalar> camera_adiff;
 

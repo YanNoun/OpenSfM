@@ -1,3 +1,4 @@
+# pyre-strict
 import itertools
 import logging
 import os
@@ -5,14 +6,15 @@ from typing import Iterator, List, Dict, Optional, Callable
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 from opensfm import (
     features,
+    features_processing,
     log,
     pygeometry,
     pymap,
     transformations as tf,
     types,
-    features_processing,
 )
 from opensfm.context import parallel_map
 from opensfm.dataset import UndistortedDataSet
@@ -48,8 +50,14 @@ def undistort_reconstruction(
         elif shot.camera.projection_type == "brown":
             urec.add_camera(perspective_camera_from_brown(shot.camera))
             subshots = [get_shot_with_different_camera(urec, shot, image_format)]
-        elif shot.camera.projection_type in ["fisheye", "fisheye_opencv"]:
+        elif shot.camera.projection_type == "fisheye":
             urec.add_camera(perspective_camera_from_fisheye(shot.camera))
+            subshots = [get_shot_with_different_camera(urec, shot, image_format)]
+        elif shot.camera.projection_type == "fisheye_opencv":
+            urec.add_camera(perspective_camera_from_fisheye_opencv(shot.camera))
+            subshots = [get_shot_with_different_camera(urec, shot, image_format)]
+        elif shot.camera.projection_type == "fisheye62":
+            urec.add_camera(perspective_camera_from_fisheye62(shot.camera))
             subshots = [get_shot_with_different_camera(urec, shot, image_format)]
         elif pygeometry.Camera.is_panorama(shot.camera.projection_type):
             subshot_width = int(data.config["depthmap_resolution"])
@@ -235,10 +243,10 @@ def compute_camera_mapping_cached(camera, new_camera, width, height):
 def undistort_image(
     shot: pymap.Shot,
     undistorted_shots: List[pymap.Shot],
-    original: Optional[np.ndarray],
-    interpolation,
+    original: Optional[NDArray],
+    interpolation: int,
     max_size: int,
-) -> Dict[str, np.ndarray]:
+) -> Dict[str, NDArray]:
     """Undistort an image into a set of undistorted ones.
 
     Args:
@@ -254,7 +262,13 @@ def undistort_image(
         return {}
 
     projection_type = shot.camera.projection_type
-    if projection_type in ["perspective", "brown", "fisheye", "fisheye_opencv"]:
+    if projection_type in [
+        "perspective",
+        "brown",
+        "fisheye",
+        "fisheye_opencv",
+        "fisheye62",
+    ]:
         [undistorted_shot] = undistorted_shots
         new_camera = undistorted_shot.camera
         height, width = original.shape[:2]
@@ -284,7 +298,7 @@ def undistort_image(
         )
 
 
-def scale_image(image: np.ndarray, max_size: int) -> np.ndarray:
+def scale_image(image: NDArray, max_size: int) -> NDArray:
     """Scale an image not to exceed max_size."""
     height, width = image.shape[:2]
     factor = max_size / float(max(height, width))
@@ -421,12 +435,12 @@ def perspective_views_of_a_panorama(
 
 
 def render_perspective_view_of_a_panorama(
-    image: np.ndarray,
+    image: NDArray,
     panoshot: pymap.Shot,
     perspectiveshot: pymap.Shot,
-    interpolation=cv2.INTER_LINEAR,
-    borderMode=cv2.BORDER_WRAP,
-) -> np.ndarray:
+    interpolation: int = cv2.INTER_LINEAR,
+    borderMode: int = cv2.BORDER_WRAP,
+) -> NDArray:
     """Render a perspective view of a panorama."""
     # Get destination pixel coordinates
     dst_shape = (perspectiveshot.camera.height, perspectiveshot.camera.width)

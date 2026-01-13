@@ -21,6 +21,7 @@
 #pragma once
 
 #include <foundation/numeric.h>
+
 #include <Eigen/Eigen>
 #include <Eigen/SVD>
 
@@ -61,7 +62,7 @@ enum {
 };
 
 template <class IT, class MAT>
-inline void EncodeEpipolarEquation(IT begin, IT end, MAT *A) {
+inline void EncodeEpipolarEquation(IT begin, IT end, MAT* A) {
   for (IT it = begin; it != end; ++it) {
     int i = (it - begin);
     const auto x1 = it->first;
@@ -82,18 +83,18 @@ Eigen::MatrixXd FivePointsNullspaceBasis(IT begin, IT end) {
 }
 
 // Multiply two polynomials of degree 1.
-Eigen::Matrix<double, -1, 1> o1(const Eigen::Matrix<double, -1, 1> &a,
-                                const Eigen::Matrix<double, -1, 1> &b);
+Eigen::Matrix<double, -1, 1> o1(const Eigen::Matrix<double, -1, 1>& a,
+                                const Eigen::Matrix<double, -1, 1>& b);
 
 // Multiply a polynomial of degree 2, a, by a polynomial of degree 1, b.
-Eigen::Matrix<double, -1, 1> o2(const Eigen::Matrix<double, -1, 1> &a,
-                                const Eigen::Matrix<double, -1, 1> &b);
+Eigen::Matrix<double, -1, 1> o2(const Eigen::Matrix<double, -1, 1>& a,
+                                const Eigen::Matrix<double, -1, 1>& b);
 
 // Builds the polynomial constraint matrix M.
-Eigen::MatrixXd FivePointsPolynomialConstraints(const Eigen::MatrixXd &E_basis);
+Eigen::MatrixXd FivePointsPolynomialConstraints(const Eigen::MatrixXd& E_basis);
 
 // Gauss--Jordan elimination for the constraint matrix.
-bool FivePointsGaussJordan(Eigen::MatrixXd *Mp);
+bool FivePointsGaussJordan(Eigen::MatrixXd* Mp);
 
 template <class IT>
 std::vector<Eigen::Matrix<double, 3, 3>> EssentialFivePoints(IT begin, IT end) {
@@ -126,7 +127,7 @@ std::vector<Eigen::Matrix<double, 3, 3>> EssentialFivePoints(IT begin, IT end) {
 
   // Compute the solutions from action matrix's eigenvectors.
   Eigen::EigenSolver<Eigen::MatrixXd> es(At);
-  typedef Eigen::EigenSolver<Eigen::MatrixXd>::EigenvectorsType Matc;
+  using Matc = Eigen::EigenSolver<Eigen::MatrixXd>::EigenvectorsType;
   Matc V = es.eigenvectors();
   Matc solutions(4, 10);
   solutions.row(0) = V.row(6).array() / V.row(9).array();
@@ -192,10 +193,10 @@ std::vector<Eigen::Matrix<double, 3, 3>> EssentialNPoints(IT begin, IT end) {
 
 namespace geometry {
 std::vector<Eigen::Matrix<double, 3, 3>> EssentialFivePoints(
-    const Eigen::Matrix<double, -1, 3> &x1,
-    const Eigen::Matrix<double, -1, 3> &x2);
+    const Eigen::Matrix<double, -1, 3>& x1,
+    const Eigen::Matrix<double, -1, 3>& x2);
 
 std::vector<Eigen::Matrix<double, 3, 3>> EssentialNPoints(
-    const Eigen::Matrix<double, -1, 3> &x1,
-    const Eigen::Matrix<double, -1, 3> &x2);
+    const Eigen::Matrix<double, -1, 3>& x1,
+    const Eigen::Matrix<double, -1, 3>& x2);
 }  // namespace geometry

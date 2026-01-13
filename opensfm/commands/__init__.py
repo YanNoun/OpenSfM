@@ -1,3 +1,8 @@
+# pyre-strict
+
+from types import ModuleType
+from typing import List
+
 from . import (
     align_submodels,
     bundle,
@@ -14,9 +19,10 @@ from . import (
     export_ply,
     export_pmvs,
     export_report,
+    export_rerun,
     export_visualsfm,
-    extract_metadata,
     extend_reconstruction,
+    extract_metadata,
     match_features,
     mesh,
     reconstruct,
@@ -27,7 +33,7 @@ from . import (
 from .command_runner import command_runner
 
 
-opensfm_commands = [
+opensfm_commands: List[ModuleType] = [
     extract_metadata,
     detect_features,
     match_features,
@@ -48,6 +54,7 @@ opensfm_commands = [
     export_colmap,
     export_geocoords,
     export_report,
+    export_rerun,
     extend_reconstruction,
     create_submodels,
     align_submodels,

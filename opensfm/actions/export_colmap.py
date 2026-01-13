@@ -29,6 +29,8 @@
 #
 # Author: Johannes L. Schoenberger (jsch at inf.ethz.ch)
 
+# pyre-strict
+
 # This script is based on an original implementation by True Price.
 
 import math
@@ -38,14 +40,31 @@ import sys
 import tempfile
 import typing as t
 from struct import pack
-from typing import Tuple
+from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple, TypeVar
 
 import numpy as np
-from opensfm import features
-from opensfm import matching
+from numpy.typing import DTypeLike, NDArray
+from opensfm import features, io, matching, pygeometry
 from opensfm.dataset import DataSet
 
-I_3 = np.eye(3)
+T = TypeVar("T")
+
+I_3: NDArray = np.eye(3)
+
+
+class Camera(Protocol):
+    width: int
+    height: int
+    projection_type: str
+    focal: float
+    k1: float
+    k2: float
+    k3: float = 0.0
+    k4: float = 0.0
+    p1: float = 0.0
+    p2: float = 0.0
+    aspect_ratio: float = 1.0
+    principal_point: Tuple[float, float] = (0.0, 0.0)
 
 
 def run_dataset(data: DataSet, binary: bool) -> None:
@@ -85,14 +104,14 @@ def run_dataset(data: DataSet, binary: bool) -> None:
         db.close()
 
         data.io_handler.rm_if_exist(database_path)
-        with data.io_handler.open(tmp_database_path, "rb") as f:
-            with data.io_handler.open(database_path, "wb") as fwb:
+        with data.io_handler.open_rb(tmp_database_path) as f:
+            with data.io_handler.open_wb(database_path) as fwb:
                 fwb.write(f.read())
 
 
 IS_PYTHON3: bool = int(sys.version_info[0]) >= 3
 
-MAX_IMAGE_ID = 2 ** 31 - 1
+MAX_IMAGE_ID: int = 2**31 - 1
 
 CREATE_CAMERAS_TABLE = """CREATE TABLE IF NOT EXISTS cameras (
     camera_id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
@@ -122,9 +141,7 @@ CREATE_IMAGES_TABLE: str = """CREATE TABLE IF NOT EXISTS images (
     prior_tz REAL,
     CONSTRAINT image_id_check CHECK(image_id >= 0 and image_id < {}),
     FOREIGN KEY(camera_id) REFERENCES cameras(camera_id))
-""".format(
-    MAX_IMAGE_ID
-)
+""".format(MAX_IMAGE_ID)
 
 CREATE_TWO_VIEW_GEOMETRIES_TABLE = """
 CREATE TABLE IF NOT EXISTS two_view_geometries (
@@ -167,27 +184,31 @@ CREATE_ALL: str = "; ".join(
 )
 
 
-def image_ids_to_pair_id(image_id1, image_id2) -> int:
+def image_ids_to_pair_id(image_id1: int, image_id2: int) -> int:
     if image_id1 > image_id2:
         image_id1, image_id2 = image_id2, image_id1
     return image_id1 * MAX_IMAGE_ID + image_id2
 
 
-def pair_id_to_image_ids(pair_id) -> Tuple[int, int]:
+def pair_id_to_image_ids(pair_id: int) -> Tuple[int, int]:
     image_id2 = pair_id % MAX_IMAGE_ID
     image_id1 = (pair_id - image_id2) // MAX_IMAGE_ID
     return image_id1, image_id2
 
 
-def array_to_blob(array) -> bytes:
+def array_to_blob(array: NDArray) -> bytes:
     if IS_PYTHON3:
         return array.tobytes()
     else:
+        # pyre-fixme[16]: Module `numpy` has no attribute `getbuffer`.
         return np.getbuffer(array)
 
 
-def blob_to_array(blob, dtype, shape: Tuple[int] = (-1,)):
+def blob_to_array(
+    blob: bytes, dtype: DTypeLike, shape: Tuple[int, ...] = (-1,)
+) -> NDArray:
     if IS_PYTHON3:
+        # pyre-fixme[20]: Argument `sep` expected.
         return np.fromstring(blob, dtype=dtype).reshape(*shape)
     else:
         return np.frombuffer(blob, dtype=dtype).reshape(*shape)
@@ -195,28 +216,46 @@ def blob_to_array(blob, dtype, shape: Tuple[int] = (-1,)):
 
 class COLMAPDatabase(sqlite3.Connection):
     @staticmethod
-    def connect(database_path) -> t.Any:
+    def connect(database_path: str) -> "COLMAPDatabase":
         return sqlite3.connect(database_path, factory=COLMAPDatabase)
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         super(COLMAPDatabase, self).__init__(*args, **kwargs)
 
-        self.create_tables = lambda: self.executescript(CREATE_ALL)
-        self.create_cameras_table = lambda: self.executescript(CREATE_CAMERAS_TABLE)
-        self.create_descriptors_table = lambda: self.executescript(
-            CREATE_DESCRIPTORS_TABLE
+        self.create_tables: Callable[[], sqlite3.Cursor] = lambda: self.executescript(
+            CREATE_ALL
         )
-        self.create_images_table = lambda: self.executescript(CREATE_IMAGES_TABLE)
-        self.create_two_view_geometries_table = lambda: self.executescript(
-            CREATE_TWO_VIEW_GEOMETRIES_TABLE
+        self.create_cameras_table: Callable[[], sqlite3.Cursor] = (
+            lambda: self.executescript(CREATE_CAMERAS_TABLE)
         )
-        self.create_keypoints_table = lambda: self.executescript(CREATE_KEYPOINTS_TABLE)
-        self.create_matches_table = lambda: self.executescript(CREATE_MATCHES_TABLE)
-        self.create_name_index = lambda: self.executescript(CREATE_NAME_INDEX)
+        self.create_descriptors_table: Callable[[], sqlite3.Cursor] = (
+            lambda: self.executescript(CREATE_DESCRIPTORS_TABLE)
+        )
+        self.create_images_table: Callable[[], sqlite3.Cursor] = (
+            lambda: self.executescript(CREATE_IMAGES_TABLE)
+        )
+        self.create_two_view_geometries_table: Callable[[], sqlite3.Cursor] = (
+            lambda: self.executescript(CREATE_TWO_VIEW_GEOMETRIES_TABLE)
+        )
+        self.create_keypoints_table: Callable[[], sqlite3.Cursor] = (
+            lambda: self.executescript(CREATE_KEYPOINTS_TABLE)
+        )
+        self.create_matches_table: Callable[[], sqlite3.Cursor] = (
+            lambda: self.executescript(CREATE_MATCHES_TABLE)
+        )
+        self.create_name_index: Callable[[], sqlite3.Cursor] = (
+            lambda: self.executescript(CREATE_NAME_INDEX)
+        )
 
     def add_camera(
-        self, model, width, height, params, prior_focal_length=False, camera_id=None
-    ) -> t.Any:
+        self,
+        model: int,
+        width: int,
+        height: int,
+        params: NDArray,
+        prior_focal_length: bool = False,
+        camera_id: Optional[int] = None,
+    ) -> Optional[int]:
         params = np.asarray(params, np.float64)
         cursor = self.execute(
             "INSERT INTO cameras VALUES (?, ?, ?, ?, ?, ?)",
@@ -232,8 +271,13 @@ class COLMAPDatabase(sqlite3.Connection):
         return cursor.lastrowid
 
     def add_image(
-        self, name, camera_id, prior_q=(0, 0, 0, 0), prior_t=(0, 0, 0), image_id=None
-    ) -> t.Any:
+        self,
+        name: str,
+        camera_id: int,
+        prior_q: Tuple[float, float, float, float] = (0, 0, 0, 0),
+        prior_t: Tuple[float, float, float] = (0, 0, 0),
+        image_id: Optional[int] = None,
+    ) -> Optional[int]:
         cursor = self.execute(
             "INSERT INTO images VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -251,7 +295,7 @@ class COLMAPDatabase(sqlite3.Connection):
         )
         return cursor.lastrowid
 
-    def add_keypoints(self, image_id, keypoints) -> None:
+    def add_keypoints(self, image_id: int, keypoints: NDArray) -> None:
         assert len(keypoints.shape) == 2
         assert keypoints.shape[1] in [2, 4, 6]
 
@@ -261,14 +305,14 @@ class COLMAPDatabase(sqlite3.Connection):
             (image_id,) + keypoints.shape + (array_to_blob(keypoints),),
         )
 
-    def add_descriptors(self, image_id, descriptors) -> None:
+    def add_descriptors(self, image_id: int, descriptors: NDArray) -> None:
         descriptors = np.ascontiguousarray(descriptors, np.uint8)
         self.execute(
             "INSERT INTO descriptors VALUES (?, ?, ?, ?)",
             (image_id,) + descriptors.shape + (array_to_blob(descriptors),),
         )
 
-    def add_matches(self, image_id1, image_id2, matches) -> None:
+    def add_matches(self, image_id1: int, image_id2: int, matches: NDArray) -> None:
         assert len(matches.shape) == 2
         assert matches.shape[1] == 2
 
@@ -283,7 +327,14 @@ class COLMAPDatabase(sqlite3.Connection):
         )
 
     def add_two_view_geometry(
-        self, image_id1, image_id2, matches, F=I_3, E=I_3, H=I_3, config=2
+        self,
+        image_id1: int,
+        image_id2: int,
+        matches: NDArray,
+        F: NDArray = I_3,
+        E: NDArray = I_3,
+        H: NDArray = I_3,
+        config: int = 2,
     ) -> None:
         assert len(matches.shape) == 2
         assert matches.shape[1] == 2
@@ -319,7 +370,7 @@ COLMAP_TYPES_MAP = {
 COLMAP_ID_MAP = {"brown": 6, "perspective": 3, "fisheye": 9, "fisheye_opencv": 5}
 
 
-def camera_to_colmap_params(camera) -> t.Tuple[float, ...]:
+def camera_to_colmap_params(camera: pygeometry.Camera) -> Tuple[float, ...]:
     w = camera.width
     h = camera.height
     normalizer = max(w, h)
@@ -353,7 +404,9 @@ def camera_to_colmap_params(camera) -> t.Tuple[float, ...]:
         raise ValueError("Can't convert {camera.projection_type} to COLMAP")
 
 
-def export_cameras(data, db) -> t.Tuple[t.Dict[str, int], t.Dict[str, int]]:
+def export_cameras(
+    data: DataSet, db: COLMAPDatabase
+) -> t.Tuple[t.Dict[str, int], t.Dict[str, int]]:
     camera_map = {}
     for camera_model, camera in data.load_camera_models().items():
         if data.camera_models_overrides_exists():
@@ -379,7 +432,9 @@ def export_cameras(data, db) -> t.Tuple[t.Dict[str, int], t.Dict[str, int]]:
     return images_map, camera_map
 
 
-def export_features(data, db, images_map) -> t.Dict[str, np.ndarray]:
+def export_features(
+    data: DataSet, db: COLMAPDatabase, images_map: t.Dict[str, int]
+) -> t.Dict[str, NDArray]:
     features_map = {}
     for image in data.images():
         width = data.load_exif(image)["width"]
@@ -395,7 +450,13 @@ def export_features(data, db, images_map) -> t.Dict[str, np.ndarray]:
     return features_map
 
 
-def export_matches(data, db, features_map, images_map) -> None:
+def export_matches(
+    data: DataSet,
+    db: COLMAPDatabase,
+    features_map: Dict[str, NDArray],
+    images_map: Dict[str, int],
+) -> None:
+    """Export matches between images to the COLMAP database."""
     matches_per_pair = {}
     for image1 in data.images():
         matches = data.load_matches(image1)
@@ -423,7 +484,9 @@ def export_matches(data, db, features_map, images_map) -> None:
             db.add_matches(images_map[pair[0]], images_map[pair[1]], inliers)
 
 
-def export_cameras_reconstruction(data, path, camera_map, binary: bool = False) -> None:
+def export_cameras_reconstruction(
+    data: DataSet, path: str, camera_map: Dict[str, int], binary: bool = False
+) -> None:
     reconstructions = data.load_reconstruction()
     cameras = {}
     for reconstruction in reconstructions:
@@ -431,10 +494,10 @@ def export_cameras_reconstruction(data, path, camera_map, binary: bool = False) 
             cameras[camera_id] = camera
 
     if binary:
-        fout = data.io_handler.open(os.path.join(path, "cameras.bin"), "wb")
-        fout.write(pack("<Q", len(cameras)))
+        fout_bin = data.io_handler.open_wb(os.path.join(path, "cameras.bin"))
+        fout_bin.write(pack("<Q", len(cameras)))
     else:
-        fout = data.io_handler.open_wt(os.path.join(path, "cameras.txt"))
+        fout_txt = data.io_handler.open_wt(os.path.join(path, "cameras.txt"))
 
     for camera_id, camera in cameras.items():
         colmap_id = camera_map[camera_id]
@@ -443,35 +506,41 @@ def export_cameras_reconstruction(data, path, camera_map, binary: bool = False) 
         h = camera.height
         params = camera_to_colmap_params(camera)
         if binary:
-            fout.write(pack("<2i", colmap_id, COLMAP_ID_MAP[camera.projection_type]))
-            fout.write(pack("<2Q", w, h))
-            fout.write(pack(f"<{len(params)}d", *params))
+            fout_bin.write(
+                pack("<2i", colmap_id, COLMAP_ID_MAP[camera.projection_type])
+            )
+            fout_bin.write(pack("<2Q", w, h))
+            fout_bin.write(pack(f"<{len(params)}d", *params))
         else:
             str_out = "%d %s %d %d"
             for _param in params:
                 str_out += " %f"
             str_out += "\n"
-            fout.write(str_out % (colmap_id, colmap_type, w, h, *params))
-    fout.close()
+            fout_txt.write(str_out % (colmap_id, colmap_type, w, h, *params))
 
 
 def export_images_reconstruction(
-    data, path, camera_map, images_map, features_map, points_map, binary: bool = False
+    data: DataSet,
+    path: str,
+    camera_map: Dict[str, int],
+    images_map: Dict[str, int],
+    features_map: Dict[str, NDArray],
+    points_map: Dict[str, int],
+    binary: bool = False,
 ) -> None:
     reconstructions = data.load_reconstruction()
     tracks_manager = data.load_tracks_manager()
 
     if binary:
-        fout = data.io_handler.open(os.path.join(path, "images.bin"), "wb")
+        fout_bin = data.io_handler.open_wb(os.path.join(path, "images.bin"))
         n_ims = 0
         for reconstruction in reconstructions:
             n_ims += len(reconstruction.shots)
-        fout.write(pack("<Q", n_ims))
+        fout_bin.write(pack("<Q", n_ims))
     else:
-        fout = data.io_handler.open_wt(os.path.join(path, "images.txt"))
+        fout_txt = data.io_handler.open_wt(os.path.join(path, "images.txt"))
 
     for reconstruction in reconstructions:
-
         for shot_id, shot in reconstruction.shots.items():
             colmap_camera_id = camera_map[shot.camera.id]
             colmap_shot_id = images_map[shot_id]
@@ -480,12 +549,12 @@ def export_images_reconstruction(
             q = angle_axis_to_quaternion(shot.pose.rotation)
 
             if binary:
-                fout.write(pack("<I", colmap_shot_id))
-                fout.write(pack("<7d", *(list(q) + list(t))))
-                fout.write(pack("<I", colmap_camera_id))
+                fout_bin.write(pack("<I", colmap_shot_id))
+                fout_bin.write(pack("<7d", *(list(q) + list(t))))
+                fout_bin.write(pack("<I", colmap_camera_id))
                 for char in shot_id:
-                    fout.write(pack("<c", char.encode("utf-8")))
-                fout.write(pack("<c", b"\x00"))
+                    fout_bin.write(pack("<c", char.encode("utf-8")))
+                fout_bin.write(pack("<c", b"\x00"))
             format_line = "%d %f %f %f %f %f %f %f %d %s\n"
             format_tuple = [
                 colmap_shot_id,
@@ -520,30 +589,31 @@ def export_images_reconstruction(
             format_line += "\n"
 
             if binary:
-                fout.write(pack("<Q", len(points_tuple) // 3))
+                fout_bin.write(pack("<Q", len(points_tuple) // 3))
                 for i in range(0, len(points_tuple), 3):
                     x, y, colmap_point_id = points_tuple[i : i + 3]
-                    fout.write(pack("<2d", x, y))
-                    fout.write(pack("<Q", colmap_point_id))
+                    fout_bin.write(pack("<2d", x, y))
+                    fout_bin.write(pack("<Q", colmap_point_id))
             else:
-                fout.write(format_line % tuple(format_tuple + points_tuple))
-    fout.close()
+                fout_txt.write(format_line % tuple(format_tuple + points_tuple))
 
 
-def export_points_reconstruction(data, path, images_map, binary: bool = False):
+def export_points_reconstruction(
+    data: DataSet, path: str, images_map: Dict[str, int], binary: bool = False
+) -> Dict[str, int]:
     reconstructions = data.load_reconstruction()
     tracks_manager = data.load_tracks_manager()
 
     points_map = {}
 
     if binary:
-        fout = data.io_handler.open(os.path.join(path, "points3D.bin"), "wb")
+        fout_bin = data.io_handler.open_wb(os.path.join(path, "points3D.bin"))
         n_points = 0
         for reconstruction in reconstructions:
             n_points += len(reconstruction.points)
-        fout.write(pack("<Q", n_points))
+        fout_bin.write(pack("<Q", n_points))
     else:
-        fout = data.io_handler.open_wt(os.path.join(path, "points3D.txt"))
+        fout_txt = data.io_handler.open_wt(os.path.join(path, "points3D.txt"))
 
     i = 0
     for reconstruction in reconstructions:
@@ -563,10 +633,10 @@ def export_points_reconstruction(data, path, images_map, binary: bool = False):
             ]
 
             if binary:
-                fout.write(pack("<Q", int(i)))
-                fout.write(pack("<3d", c[0], c[1], c[2]))  # Position
-                fout.write(pack("<3B", *[int(i) for i in cl]))  # Color
-                fout.write(pack("<d", 0.0))  # Error
+                fout_bin.write(pack("<Q", int(i)))
+                fout_bin.write(pack("<3d", c[0], c[1], c[2]))  # Position
+                fout_bin.write(pack("<3B", *[int(i) for i in cl]))  # Color
+                fout_bin.write(pack("<d", 0.0))  # Error
 
             track_tuple = []
             for image, obs in tracks_manager.get_track_observations(point.id).items():
@@ -577,18 +647,17 @@ def export_points_reconstruction(data, path, images_map, binary: bool = False):
             format_line += "\n"
 
             if binary:
-                fout.write(pack("<Q", len(track_tuple) // 2))  # Track length
+                fout_bin.write(pack("<Q", len(track_tuple) // 2))  # Track length
                 for el in track_tuple:
-                    fout.write(pack("<i", el))  # Track
+                    fout_bin.write(pack("<i", el))  # Track
             else:
-                fout.write(format_line % tuple(format_tuple + track_tuple))
+                fout_txt.write(format_line % tuple(format_tuple + track_tuple))
             points_map[point.id] = i
             i += 1
-    fout.close()
     return points_map
 
 
-def angle_axis_to_quaternion(angle_axis: np.ndarray) -> t.List[float]:
+def angle_axis_to_quaternion(angle_axis: NDArray) -> List[float]:
     angle = np.linalg.norm(angle_axis)
 
     x = angle_axis[0] / angle
@@ -603,7 +672,9 @@ def angle_axis_to_quaternion(angle_axis: np.ndarray) -> t.List[float]:
     return [qw, qx, qy, qz]
 
 
-def export_ini_file(path, db_path, images_path, io_handler) -> None:
+def export_ini_file(
+    path: str, db_path: str, images_path: str, io_handler: io.IoFilesystemBase
+) -> None:
     with io_handler.open_wt(os.path.join(path, "project.ini")) as fout:
         fout.write("log_to_stderr=false\nlog_level=2\n")
         fout.write("database_path=%s\n" % db_path)

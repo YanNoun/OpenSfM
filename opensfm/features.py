@@ -1,11 +1,13 @@
+# pyre-strict
 """Tools to extract features."""
 
 import logging
 import time
-from typing import Tuple, Dict, Any, List, Optional
+from typing import Any, BinaryIO, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
+from numpy.typing import NDArray
 from opensfm import context, pyfeatures
 
 
@@ -13,16 +15,16 @@ logger: logging.Logger = logging.getLogger(__name__)
 
 
 class SemanticData:
-    segmentation: np.ndarray
-    instances: Optional[np.ndarray]
+    segmentation: NDArray
+    instances: Optional[NDArray]
     labels: List[Dict[str, Any]]
 
     def __init__(
         self,
-        segmentation: np.ndarray,
-        instances: Optional[np.ndarray],
+        segmentation: NDArray,
+        instances: Optional[NDArray],
         labels: List[Dict[str, Any]],
-    ):
+    ) -> None:
         self.segmentation = segmentation
         self.instances = instances
         self.labels = labels
@@ -30,7 +32,7 @@ class SemanticData:
     def has_instances(self) -> bool:
         return self.instances is not None
 
-    def mask(self, mask: np.ndarray) -> "SemanticData":
+    def mask(self, mask: NDArray) -> "SemanticData":
         try:
             segmentation = self.segmentation[mask]
             instances = self.instances
@@ -46,27 +48,30 @@ class SemanticData:
 
 
 class FeaturesData:
-    points: np.ndarray
-    descriptors: Optional[np.ndarray]
-    colors: np.ndarray
+    points: NDArray
+    descriptors: Optional[NDArray]
+    colors: NDArray
     semantic: Optional[SemanticData]
+    depths: Optional[NDArray]  # New field. This field is not serialized yet
 
     FEATURES_VERSION: int = 3
     FEATURES_HEADER: str = "OPENSFM_FEATURES_VERSION"
 
     def __init__(
         self,
-        points: np.ndarray,
-        descriptors: Optional[np.ndarray],
-        colors: np.ndarray,
+        points: NDArray,
+        descriptors: Optional[NDArray],
+        colors: NDArray,
         semantic: Optional[SemanticData],
-    ):
+        depths: Optional[NDArray] = None,
+    ) -> None:
         self.points = points
         self.descriptors = descriptors
         self.colors = colors
         self.semantic = semantic
+        self.depths = depths
 
-    def get_segmentation(self) -> Optional[np.ndarray]:
+    def get_segmentation(self) -> Optional[NDArray]:
         semantic = self.semantic
         if not semantic:
             return None
@@ -80,7 +85,7 @@ class FeaturesData:
             return False
         return semantic.instances is not None
 
-    def mask(self, mask: np.ndarray) -> "FeaturesData":
+    def mask(self, mask: NDArray) -> "FeaturesData":
         if self.semantic:
             masked_semantic = self.semantic.mask(mask)
         else:
@@ -90,11 +95,12 @@ class FeaturesData:
             self.descriptors[mask] if self.descriptors is not None else None,
             self.colors[mask],
             masked_semantic,
+            self.depths[mask] if self.depths is not None else None,
         )
 
-    def save(self, fileobject: Any, config: Dict[str, Any]):
+    def save(self, fileobject: Union[str, BinaryIO], config: Dict[str, Any]) -> None:
         """Save features from file (path like or file object like)"""
-        feature_type = config["feature_type"]
+        feature_type = config["feature_type"].upper()
         if (
             (
                 feature_type == "AKAZE"
@@ -119,7 +125,7 @@ class FeaturesData:
                 colors=self.colors,
                 segmentations=semantic.segmentation.astype(np.uint8),
                 instances=instances.astype(np.int16) if instances is not None else [],
-                segmentation_labels=np.array(semantic.labels).astype(np.str),
+                segmentation_labels=np.array(semantic.labels).astype(str),
                 OPENSFM_FEATURES_VERSION=self.FEATURES_VERSION,
             )
         else:
@@ -135,7 +141,9 @@ class FeaturesData:
             )
 
     @classmethod
-    def from_file(cls, fileobject: Any, config: Dict[str, Any]) -> "FeaturesData":
+    def from_file(
+        cls, fileobject: Union[str, BinaryIO], config: Dict[str, Any]
+    ) -> "FeaturesData":
         """Load features from file (path like or file object like)"""
         s = np.load(fileobject, allow_pickle=False)
         version = cls._features_file_version(s)
@@ -151,7 +159,7 @@ class FeaturesData:
 
     @classmethod
     def _from_file_v0(
-        cls, data: Dict[str, np.ndarray], config: Dict[str, Any]
+        cls, data: Dict[str, NDArray], config: Dict[str, Any]
     ) -> "FeaturesData":
         """Base version of features file
 
@@ -168,7 +176,7 @@ class FeaturesData:
 
     @classmethod
     def _from_file_v1(
-        cls, data: Dict[str, np.ndarray], config: Dict[str, Any]
+        cls, data: Dict[str, NDArray], config: Dict[str, Any]
     ) -> "FeaturesData":
         """Version 1 of features file
 
@@ -268,7 +276,7 @@ class FeaturesData:
         )
 
 
-def resized_image(image: np.ndarray, max_size: int) -> np.ndarray:
+def resized_image(image: NDArray, max_size: int) -> NDArray:
     """Resize image to feature_process_size."""
     h, w = image.shape[:2]
     size = max(w, h)
@@ -279,7 +287,7 @@ def resized_image(image: np.ndarray, max_size: int) -> np.ndarray:
         return image
 
 
-def root_feature(desc: np.ndarray, l2_normalization: bool = False) -> np.ndarray:
+def root_feature(desc: NDArray, l2_normalization: bool = False) -> NDArray:
     if l2_normalization:
         s2 = np.linalg.norm(desc, axis=1)
         desc = (desc.T / s2).T
@@ -289,8 +297,8 @@ def root_feature(desc: np.ndarray, l2_normalization: bool = False) -> np.ndarray
 
 
 def root_feature_surf(
-    desc: np.ndarray, l2_normalization: bool = False, partial: bool = False
-) -> np.ndarray:
+    desc: NDArray, l2_normalization: bool = False, partial: bool = False
+) -> NDArray:
     """
     Experimental square root mapping of surf-like feature, only work for 64-dim surf now
     """
@@ -312,8 +320,8 @@ def root_feature_surf(
 
 
 def normalized_image_coordinates(
-    pixel_coords: np.ndarray, width: int, height: int
-) -> np.ndarray:
+    pixel_coords: NDArray, width: int, height: int
+) -> NDArray:
     size = max(width, height)
     p = np.empty((len(pixel_coords), 2))
     p[:, 0] = (pixel_coords[:, 0] + 0.5 - width / 2.0) / size
@@ -322,8 +330,8 @@ def normalized_image_coordinates(
 
 
 def denormalized_image_coordinates(
-    norm_coords: np.ndarray, width: int, height: int
-) -> np.ndarray:
+    norm_coords: NDArray, width: int, height: int
+) -> NDArray:
     size = max(width, height)
     p = np.empty((len(norm_coords), 2))
     p[:, 0] = norm_coords[:, 0] * size - 0.5 + width / 2.0
@@ -332,15 +340,19 @@ def denormalized_image_coordinates(
 
 
 def normalize_features(
-    points: np.ndarray, desc: np.ndarray, colors: np.ndarray, width: int, height: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray,]:
+    points: NDArray, desc: NDArray, colors: NDArray, width: int, height: int
+) -> Tuple[
+    NDArray,
+    NDArray,
+    NDArray,
+]:
     """Normalize feature coordinates and size."""
     points[:, :2] = normalized_image_coordinates(points[:, :2], width, height)
     points[:, 2:3] /= max(width, height)
     return points, desc, colors
 
 
-def _in_mask(point: np.ndarray, width: int, height: int, mask: np.ndarray) -> bool:
+def _in_mask(point: NDArray, width: int, height: int, mask: NDArray) -> bool:
     """Check if a point is inside a binary mask."""
     u = mask.shape[1] * (point[0] + 0.5) / width
     v = mask.shape[0] * (point[1] + 0.5) / height
@@ -348,8 +360,8 @@ def _in_mask(point: np.ndarray, width: int, height: int, mask: np.ndarray) -> bo
 
 
 def extract_features_sift(
-    image: np.ndarray, config: Dict[str, Any], features_count: int
-) -> Tuple[np.ndarray, np.ndarray]:
+    image: NDArray, config: Dict[str, Any], features_count: int
+) -> Tuple[NDArray, NDArray]:
     sift_edge_threshold = config["sift_edge_threshold"]
     sift_peak_threshold = float(config["sift_peak_threshold"])
     nfeatures = int(features_count * 3 / 2)
@@ -386,12 +398,17 @@ def extract_features_sift(
             detector = cv2.SIFT_create(
                 nfeatures=nfeatures, edgeThreshold=sift_edge_threshold, contrastThreshold=sift_peak_threshold
             )
+            descriptor = detector
         elif context.OPENCV3:
             detector = cv2.xfeatures2d.SIFT_create(
                 nfeatures=nfeatures, edgeThreshold=sift_edge_threshold, contrastThreshold=sift_peak_threshold
             )
+            descriptor = detector
         else:
-            detector.setDouble("contrastThreshold", sift_peak_threshold)
+            detector = cv2.FeatureDetector_create("SIFT")
+            descriptor = cv2.DescriptorExtractor_create("SIFT")
+            detector.setDouble("edgeThreshold", sift_edge_threshold)
+
         points = detector.detect(image)
         logger.debug("Found {0} points in {1}s".format(len(points), time.time() - t))
         if len(points) < features_count and sift_peak_threshold > 0.0001:
@@ -400,6 +417,7 @@ def extract_features_sift(
         else:
             logger.debug("done")
             break
+
     points, desc = descriptor.compute(image, points)
 
     if desc is not None:
@@ -427,8 +445,8 @@ def extract_features_popsift(
     return points, desc
 
 def extract_features_surf(
-    image: np.ndarray, config: Dict[str, Any], features_count: int
-) -> Tuple[np.ndarray, np.ndarray]:
+    image: NDArray, config: Dict[str, Any], features_count: int
+) -> Tuple[NDArray, NDArray]:
     surf_hessian_threshold = config["surf_hessian_threshold"]
     if context.OPENCV3:
         try:
@@ -492,8 +510,8 @@ def akaze_descriptor_type(name: str) -> pyfeatures.AkazeDescriptorType:
 
 
 def extract_features_akaze(
-    image: np.ndarray, config: Dict[str, Any], features_count: int
-) -> Tuple[np.ndarray, np.ndarray]:
+    image: NDArray, config: Dict[str, Any], features_count: int
+) -> Tuple[NDArray, NDArray]:
     options = pyfeatures.AKAZEOptions()
     options.omax = config["akaze_omax"]
     akaze_descriptor_name = config["akaze_descriptor"]
@@ -521,8 +539,8 @@ def extract_features_akaze(
 
 
 def extract_features_hahog(
-    image: np.ndarray, config: Dict[str, Any], features_count: int
-) -> Tuple[np.ndarray, np.ndarray]:
+    image: NDArray, config: Dict[str, Any], features_count: int
+) -> Tuple[NDArray, NDArray]:
     t = time.time()
 
     points, desc = pyfeatures.hahog(
@@ -539,6 +557,7 @@ def extract_features_hahog(
         uchar_scaling = 512
 
     if config["hahog_normalize_to_uchar"]:
+        # pyre-fixme[16]: `int` has no attribute `clip`.
         desc = (uchar_scaling * desc).clip(0, 255).round()
 
     logger.debug("Found {0} points in {1}s".format(len(points), time.time() - t))
@@ -564,8 +583,8 @@ def extract_features_dspsift(
 
 
 def extract_features_orb(
-    image: np.ndarray, config: Dict[str, Any], features_count: int
-) -> Tuple[np.ndarray, np.ndarray]:
+    image: NDArray, config: Dict[str, Any], features_count: int
+) -> Tuple[NDArray, NDArray]:
     if context.OPENCV3:
         detector = cv2.ORB_create(nfeatures=features_count)
         descriptor = detector
@@ -590,8 +609,8 @@ def extract_features_orb(
 
 
 def extract_features(
-    image: np.ndarray, config: Dict[str, Any], is_panorama: bool
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    image: NDArray, config: Dict[str, Any], is_panorama: bool
+) -> Tuple[NDArray, NDArray, NDArray]:
     """Detect features in a color or gray-scale image.
 
     The type of feature detected is determined by the ``feature_type``
@@ -623,10 +642,14 @@ def extract_features(
         else config["feature_min_frames"]
     )
 
-    assert len(image.shape) == 3 or len(image.shape) == 2
+    assert image.ndim == 2 or image.ndim == 3 and image.shape[2] in [1, 3]
+    assert image.shape[0] > 2 and image.shape[1] > 2
+    assert np.issubdtype(image.dtype, np.uint8)
+
     image = resized_image(image, extraction_size)
-    if len(image.shape) == 2:  # convert (h, w) to (h, w, 1)
+    if image.ndim == 2:  # convert (h, w) to (h, w, 1)
         image = np.expand_dims(image, axis=2)
+
     # convert color to gray-scale if necessary
     if image.shape[2] == 3:
         image_gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
@@ -667,7 +690,7 @@ def extract_features(
     return normalize_features(points, desc, colors, image.shape[1], image.shape[0])
 
 
-def build_flann_index(descriptors: np.ndarray, config: Dict[str, Any]) -> Any:
+def build_flann_index(descriptors: NDArray, config: Dict[str, Any]) -> cv2.flann_Index:
     # FLANN_INDEX_LINEAR = 0
     FLANN_INDEX_KDTREE = 1
     FLANN_INDEX_KMEANS = 2

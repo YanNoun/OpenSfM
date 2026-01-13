@@ -1,6 +1,7 @@
-from typing import Dict, Any
+# pyre-unsafe
+from typing import Any, Dict
 
-from annotation_gui_gcp.lib.views.web_view import WebView
+from .web_view import WebView
 
 
 class ToolsView(WebView):

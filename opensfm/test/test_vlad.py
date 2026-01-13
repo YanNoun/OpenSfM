@@ -1,3 +1,4 @@
+# pyre-strict
 import numpy as np
 import pytest
 from opensfm import vlad

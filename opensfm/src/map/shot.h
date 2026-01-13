@@ -71,8 +71,8 @@ class Shot {
 
   // Pose
   void SetPose(const geometry::Pose& pose);
-  const geometry::Pose* const GetPose() const;
-  geometry::Pose* const GetPose();
+  const geometry::Pose* GetPose() const;
+  geometry::Pose* GetPose();
   Mat4d GetWorldToCam() const { return GetPose()->WorldToCamera(); }
   Mat4d GetCamToWorld() const { return GetPose()->CameraToWorld(); }
 
@@ -101,9 +101,11 @@ class Shot {
   const Observation& GetObservation(const FeatureId id) const {
     return landmark_observations_.at(landmark_id_.at(id));
   }
-  void CreateObservation(Landmark* lm, const Observation& obs) {
-    landmark_observations_.insert(std::make_pair(lm, obs));
+  const Observation* CreateObservation(Landmark* lm, const Observation& obs) {
+    const auto inserted =
+        landmark_observations_.insert(std::make_pair(lm, obs));
     landmark_id_.insert(std::make_pair(obs.feature_id, lm));
+    return &inserted.first->second;
   }
   Observation* GetLandmarkObservation(Landmark* lm) {
     return &landmark_observations_.at(lm);
@@ -117,6 +119,14 @@ class Shot {
     }
   }
   void RemoveLandmarkObservation(const FeatureId id);
+  void ClearLandmarkObservationsUnsafe() {
+    // Use swap idiom to actually release memory, not just clear elements.
+    // clear() may retain allocated memory/bucket capacity.
+    decltype(landmark_observations_) empty_obs;
+    landmark_observations_.swap(empty_obs);
+    decltype(landmark_id_) empty_ids;
+    landmark_id_.swap(empty_ids);
+  }
 
   // Metadata such as GPS, IMU, time
   const ShotMeasurements& GetShotMeasurements() const {
@@ -134,13 +144,14 @@ class Shot {
   bool operator<=(const Shot& shot) const { return id_ <= shot.id_; }
   bool operator>(const Shot& shot) const { return id_ > shot.id_; }
   bool operator>=(const Shot& shot) const { return id_ >= shot.id_; }
-  const geometry::Camera* const GetCamera() const { return shot_camera_; }
+  const geometry::Camera* GetCamera() const { return shot_camera_; }
 
   // Camera-related
   Vec2d Project(const Vec3d& global_pos) const;
   MatX2d ProjectMany(const MatX3d& points) const;
   Vec3d Bearing(const Vec2d& point) const;
   MatX3d BearingMany(const MatX2d& points) const;
+  Vec3d LandmarkBearing(const Landmark* landmark) const;
 
   // Covariance
   MatXd GetCovariance() const { return covariance_.Value(); }

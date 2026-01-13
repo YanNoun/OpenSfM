@@ -1,17 +1,18 @@
+# pyre-strict
 import logging
 from collections import defaultdict
 
 import numpy as np
 from opensfm.dataset import DataSet
-from opensfm.large.metadataset import MetaDataSet
 from opensfm.large import tools
+from opensfm.large.metadataset import MetaDataSet
 
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 
 def run_dataset(data: DataSet) -> None:
-    """ Split the dataset into smaller submodels. """
+    """Split the dataset into smaller submodels."""
 
     meta_data = MetaDataSet(data.data_path)
 
@@ -31,7 +32,7 @@ def run_dataset(data: DataSet) -> None:
     meta_data.create_submodels(meta_data.load_clusters_with_neighbors())
 
 
-def _create_image_list(data: DataSet, meta_data) -> None:
+def _create_image_list(data: DataSet, meta_data: MetaDataSet) -> None:
     ills = []
     for image in data.images():
         exif = data.load_exif(image)
@@ -95,6 +96,7 @@ def _cluster_images(meta_data: MetaDataSet, cluster_size: float) -> None:
     K = float(images.shape[0]) / cluster_size
     K = int(np.ceil(K))
 
+    # pyre-fixme[23]: Unable to unpack single value, 2 were expected.
     labels, centers = tools.kmeans(positions, K)[1:]
 
     images = images.ravel()
@@ -103,7 +105,7 @@ def _cluster_images(meta_data: MetaDataSet, cluster_size: float) -> None:
     meta_data.save_clusters(images, positions, labels, centers)
 
 
-def _add_cluster_neighbors(meta_data: MetaDataSet, max_distance) -> None:
+def _add_cluster_neighbors(meta_data: MetaDataSet, max_distance: float) -> None:
     images, positions, labels, centers = meta_data.load_clusters()
     clusters = tools.add_cluster_neighbors(positions, labels, centers, max_distance)
 

@@ -1,3 +1,4 @@
+# pyre-strict
 from typing import Optional
 
 import opensfm.synthetic_data.synthetic_scene as ss

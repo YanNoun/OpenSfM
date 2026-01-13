@@ -1,7 +1,10 @@
+# pyre-strict
 """Basic types for building a reconstruction."""
-from typing import Dict, Optional
+
+from typing import Any, Dict, Optional
 
 import numpy as np
+from numpy.typing import NDArray
 from opensfm import pygeometry, pymap
 from opensfm.geo import TopocentricConverter
 
@@ -9,20 +12,7 @@ from opensfm.geo import TopocentricConverter
 PANOSHOT_RIG_PREFIX = "panoshot_"
 
 
-class ShotMesh(object):
-    """Triangular mesh of points visible in a shot
-
-    Attributes:
-        vertices: (list of vectors) mesh vertices
-        faces: (list of triplets) triangles' topology
-    """
-
-    def __init__(self):
-        self.vertices = None
-        self.faces = None
-
-
-class Reconstruction(object):
+class Reconstruction:
     """Defines the reconstructed scene.
 
     Attributes:
@@ -36,7 +26,7 @@ class Reconstruction(object):
         """Defaut constructor"""
         self._setup_from_map(pymap.Map())
 
-    def _setup_from_map(self, map_obj: pymap.Map):
+    def _setup_from_map(self, map_obj: pymap.Map) -> None:
         self.map = map_obj
         self.camera_view = pymap.CameraView(self.map)
         self.bias_view = pymap.BiasView(self.map)
@@ -46,7 +36,7 @@ class Reconstruction(object):
         self.pano_shot_view = pymap.PanoShotView(self.map)
         self.landmark_view = pymap.LandmarkView(self.map)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return (
             "<Reconstruction"
             f" cameras={len(self.cameras)}"
@@ -294,7 +284,7 @@ class Reconstruction(object):
         self.map.remove_pano_shot(shot_id)
 
     def create_point(
-        self, point_id: str, coord: Optional[np.ndarray] = None
+        self, point_id: str, coord: Optional[NDArray] = None
     ) -> pymap.Landmark:
         if coord is None:
             return self.map.create_landmark(point_id, np.array([0, 0, 0]))
@@ -333,7 +323,7 @@ class Reconstruction(object):
     def remove_observation(self, shot_id: str, lm_id: str) -> None:
         self.map.remove_observation(shot_id, lm_id)
 
-    def __deepcopy__(self, d):
+    def __deepcopy__(self, d: Dict[str, Any]) -> "Reconstruction":
         rec_cpy = Reconstruction()
 
         copy_observations = False

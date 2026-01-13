@@ -1,3 +1,4 @@
+# pyre-strict
 from opensfm import feature_loading
 
 

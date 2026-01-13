@@ -1,15 +1,18 @@
+# pyre-strict
 from typing import Any, Dict, List, Set, Tuple
 
 import numpy as np
-from opensfm import bow
-from opensfm import config
-from opensfm import matching
-from opensfm import pairs_selection
-from opensfm import pyfeatures
-from opensfm.synthetic_data import synthetic_dataset
+from numpy.typing import NDArray
+from opensfm import bow, config, matching, pairs_selection, pyfeatures, pygeometry
+from opensfm.synthetic_data import synthetic_dataset, synthetic_scene
 
 
-def compute_words(features: np.ndarray, bag_of_words, num_words, bow_matcher_type) -> np.ndarray:
+def compute_words(
+    features: NDArray,
+    bag_of_words: bow.BagOfWords,
+    num_words: int,
+    bow_matcher_type: str,
+) -> NDArray:
     closest_words = bag_of_words.map_to_words(features, num_words, bow_matcher_type)
     if closest_words is None:
         return np.array([], dtype=np.int32)
@@ -19,7 +22,7 @@ def compute_words(features: np.ndarray, bag_of_words, num_words, bow_matcher_typ
 
 def example_features(
     nfeatures: int, config: Dict[str, Any]
-) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+) -> Tuple[List[NDArray], List[NDArray]]:
     words, frequencies = bow.load_bow_words_and_frequencies(config)
     bag_of_words = bow.BagOfWords(words, frequencies)
 
@@ -80,7 +83,7 @@ def test_unfilter_matches() -> None:
     assert res[1][1] == 6
 
 
-def test_match_images(scene_synthetic) -> None:
+def test_match_images(scene_synthetic: synthetic_scene.SyntheticInputData) -> None:
     reference = scene_synthetic.reconstruction
     synthetic = synthetic_dataset.SyntheticDataSet(
         reference,
@@ -137,7 +140,9 @@ def test_ordered_pairs() -> None:
     }
 
 
-def test_triangulation_inliers(pairs_and_their_E) -> None:
+def test_triangulation_inliers(
+    pairs_and_their_E: List[Tuple[NDArray, NDArray, NDArray, pygeometry.Pose]],
+) -> None:
     for f1, f2, _, pose in pairs_and_their_E:
         Rt = pose.get_cam_to_world()[:3]
 

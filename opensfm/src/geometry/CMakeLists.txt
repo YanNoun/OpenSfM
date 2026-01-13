@@ -32,6 +32,7 @@ if (OPENSFM_BUILD_TESTS)
         test/camera_functions_test.cc
         test/covariance_test.cc
         test/point_test.cc
+        test/triangulation_test.cc
         )
     add_executable(geometry_test ${GEOMETRY_TEST_FILES})
     target_include_directories(geometry_test PRIVATE ${CMAKE_SOURCE_DIR})
@@ -52,3 +53,4 @@ target_link_libraries(pygeometry
 set_target_properties(pygeometry PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${opensfm_SOURCE_DIR}/.."
 )
+install(TARGETS pygeometry LIBRARY DESTINATION .)

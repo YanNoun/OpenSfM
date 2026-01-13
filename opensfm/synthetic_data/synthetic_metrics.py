@@ -1,14 +1,17 @@
-from typing import Tuple, List, Dict
+# pyre-strict
+import copy
+from typing import Dict, List, Tuple
 
 import cv2
 import numpy as np
 import opensfm.transformations as tf
-from opensfm import align, types, pymap, multiview
+from numpy.typing import NDArray
+from opensfm import align, geo, multiview, pymap, types
 
 
 def points_errors(
     reference: types.Reconstruction, candidate: types.Reconstruction
-) -> np.ndarray:
+) -> NDArray:
     common_points = set(reference.points.keys()).intersection(
         set(candidate.points.keys())
     )
@@ -30,7 +33,7 @@ def completeness_errors(
     )
 
 
-def gps_errors(candidate: types.Reconstruction) -> np.ndarray:
+def gps_errors(candidate: types.Reconstruction) -> NDArray:
     errors = []
     for shot in candidate.shots.values():
         bias = candidate.biases[shot.camera.id]
@@ -42,7 +45,7 @@ def gps_errors(candidate: types.Reconstruction) -> np.ndarray:
 
 def gcp_errors(
     candidate: types.Reconstruction, gcps: Dict[str, pymap.GroundControlPoint]
-) -> np.ndarray:
+) -> NDArray:
     errors = []
     for gcp in gcps.values():
         if not gcp.lla:
@@ -59,7 +62,7 @@ def gcp_errors(
 
 def position_errors(
     reference: types.Reconstruction, candidate: types.Reconstruction
-) -> np.ndarray:
+) -> NDArray:
     common_shots = set(reference.shots.keys()).intersection(set(candidate.shots.keys()))
     errors = []
     for s in common_shots:
@@ -71,7 +74,7 @@ def position_errors(
 
 def rotation_errors(
     reference: types.Reconstruction, candidate: types.Reconstruction
-) -> np.ndarray:
+) -> NDArray:
     common_shots = set(reference.shots.keys()).intersection(set(candidate.shots.keys()))
     errors = []
     for s in common_shots:
@@ -85,8 +88,8 @@ def rotation_errors(
 
 
 def find_alignment(
-    points0: List[np.ndarray], points1: List[np.ndarray]
-) -> Tuple[float, np.ndarray, np.ndarray]:
+    points0: List[NDArray], points1: List[NDArray]
+) -> Tuple[float, NDArray, NDArray]:
     """Compute similarity transform between point sets.
 
     Returns (s, A, b) such that ``points1 = s * A * points0 + b``
@@ -124,25 +127,39 @@ def aligned_to_reference(
                 coords2.append(shot2.pose.get_origin())
 
     s, A, b = find_alignment(coords1, coords2)
-    aligned = _copy_reconstruction(reconstruction)
+    aligned = copy.deepcopy(reconstruction)
     align.apply_similarity(aligned, s, A, b)
     return aligned
 
 
-def _copy_reconstruction(reconstruction: types.Reconstruction) -> types.Reconstruction:
-    copy = types.Reconstruction()
-    for camera in reconstruction.cameras.values():
-        copy.add_camera(camera)
-    for shot in reconstruction.shots.values():
-        copy.add_shot(shot)
-    for point in reconstruction.points.values():
-        copy.add_point(point)
-    return copy
+def change_geo_reference(
+    reconstruction: types.Reconstruction,
+    latitude: float,
+    longitude: float,
+    altitude: float,
+) -> types.Reconstruction:
+    """Change the geo reference of a reconstruction.
+
+    This assumes that the new lla is close enough that rotation differences
+    between references can be ignored.
+    """
+    t_old_new = reconstruction.reference.to_topocentric(latitude, longitude, altitude)
+
+    s = 1.0
+    A = np.eye(3)
+    b = -np.array(t_old_new)
+    aligned = copy.deepcopy(reconstruction)
+    aligned.reference = geo.TopocentricConverter(latitude, longitude, altitude)
+    align.apply_similarity(aligned, s, A, b)
+    for shot in aligned.shots.values():
+        if shot.metadata.gps_position.has_value:
+            shot.metadata.gps_position.value = shot.metadata.gps_position.value + b
+    return aligned
 
 
-def rmse(errors: np.ndarray) -> float:
-    return np.sqrt(np.mean(errors ** 2))
+def rmse(errors: NDArray) -> float:
+    return np.sqrt(np.mean(errors**2))
 
 
-def mad(errors: np.ndarray) -> float:
+def mad(errors: NDArray) -> float:
     return np.median(np.absolute(errors - np.median(errors)))

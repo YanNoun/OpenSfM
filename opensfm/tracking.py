@@ -1,52 +1,73 @@
+# pyre-strict
 import logging
 import typing as t
+from typing import Callable, cast, Dict, List, Tuple
 
 import networkx as nx
 import numpy as np
-from opensfm import pymap
+from numpy.typing import NDArray
+from opensfm import context, pymap
 from opensfm.dataset_base import DataSetBase
-from opensfm.unionfind import UnionFind
 from opensfm.pymap import TracksManager
+from opensfm.unionfind import UnionFind
 
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 
 def load_features(
-    dataset: DataSetBase, images: t.List[str]
-) -> t.Tuple[
-    t.Dict[str, np.ndarray],
-    t.Dict[str, np.ndarray],
-    t.Dict[str, np.ndarray],
-    t.Dict[str, np.ndarray],
+    dataset: DataSetBase, images: List[str]
+) -> Tuple[
+    Dict[str, NDArray[np.float64]],
+    Dict[str, NDArray[np.int32]],
+    Dict[str, NDArray[np.int32]],
+    Dict[str, NDArray[np.int32]],
+    Dict[str, NDArray[np.float64]],
 ]:
-    logging.info("reading features")
+    logging.info("Reading features")
+
+    def load_one(im):
+        features_data = dataset.load_features(im)
+        if not features_data:
+            return im, None, None, None, None, None
+        features = features_data.points[:, :3]
+        colors = features_data.colors
+        segmentations = None
+        instances = None
+        if features_data.semantic:
+            segmentations = features_data.semantic.segmentation
+            if features_data.semantic.has_instances():
+                instances = features_data.semantic.instances
+        depths = features_data.depths if features_data.depths is not None else None
+        return im, features, colors, segmentations, instances, depths
+
+    # Use context.parallel_map for parallel loading
+    results = context.parallel_map(
+        load_one, images, dataset.config.get("processes", 1))
+
     features = {}
     colors = {}
     segmentations = {}
     instances = {}
-    for im in images:
-        features_data = dataset.load_features(im)
+    depths = {}
+    for im, feat, color, seg, inst, depth in results:
+        if feat is not None:
+            features[im] = feat
+            colors[im] = color
+            if seg is not None:
+                segmentations[im] = seg
+            if inst is not None:
+                instances[im] = inst
+            if depth is not None:
+                depths[im] = depth
 
-        if not features_data:
-            continue
-
-        features[im] = features_data.points[:, :3]
-        colors[im] = features_data.colors
-
-        semantic_data = features_data.semantic
-        if semantic_data:
-            segmentations[im] = semantic_data.segmentation
-            if semantic_data.has_instances():
-                instances[im] = semantic_data.instances
-
-    return features, colors, segmentations, instances
+    return features, colors, segmentations, instances, depths
 
 
 def load_matches(
-    dataset: DataSetBase, images: t.List[str]
-) -> t.Dict[t.Tuple[str, str], t.List[t.Tuple[int, int]]]:
-    matches = {}
+    dataset: DataSetBase, images: List[str]
+) -> t.Iterator[Tuple[Tuple[str, str], List[Tuple[int, int]]]]:
+    """Yield matches for each image pair"""
     for im1 in images:
         try:
             im1_matches = dataset.load_matches(im1)
@@ -54,23 +75,27 @@ def load_matches(
             continue
         for im2 in im1_matches:
             if im2 in images:
-                matches[im1, im2] = im1_matches[im2]
-    return matches
+                yield (im1, im2), im1_matches[im2]
 
 
-def create_tracks_manager(
-    features: t.Dict[str, np.ndarray],
-    colors: t.Dict[str, np.ndarray],
-    segmentations: t.Dict[str, np.ndarray],
-    instances: t.Dict[str, np.ndarray],
-    matches: t.Dict[t.Tuple[str, str], t.List[t.Tuple[int, int]]],
+def create_tracks_manager_from_matches_iter(
+    features: Dict[str, NDArray[np.float64]],
+    colors: Dict[str, NDArray[np.int32]],
+    segmentations: Dict[str, NDArray[np.int32]],
+    instances: Dict[str, NDArray[np.int32]],
+    matches: Callable[[], t.Iterator[Tuple[Tuple[str, str], List[Tuple[int, int]]]]],
     min_length: int,
+    depths: Dict[str, NDArray[np.float64]],
+    depth_is_radial: bool = True,
+    depth_std_deviation: float = 1.0,
 ) -> TracksManager:
     """Link matches into tracks."""
     logger.debug("Merging features onto tracks")
+
+    logger.debug("Running union-find to find aggregated tracks")
     uf = UnionFind()
-    for im1, im2 in matches:
-        for f1, f2 in matches[im1, im2]:
+    for (im1, im2), pairs in matches():
+        for f1, f2 in pairs:
             uf.union((im1, f1), (im2, f2))
 
     sets = {}
@@ -82,30 +107,102 @@ def create_tracks_manager(
             sets[p] = [i]
 
     tracks = [t for t in sets.values() if _good_track(t, min_length)]
-    logger.debug("Good tracks: {}".format(len(tracks)))
 
+    logger.debug("Constructing TracksManager from tracks")
     NO_VALUE = pymap.Observation.NO_SEMANTIC_VALUE
     tracks_manager = pymap.TracksManager()
+    num_observations = 0
+    num_depth_priors = 0
     for track_id, track in enumerate(tracks):
         for image, featureid in track:
             if image not in features:
                 continue
             x, y, s = features[image][featureid]
             r, g, b = colors[image][featureid]
-            segmentation, instance = (
-                segmentations[image][featureid] if image in segmentations else NO_VALUE,
-                instances[image][featureid] if image in instances else NO_VALUE,
+            segmentation = (
+                int(segmentations[image][featureid])
+                if image in segmentations
+                else NO_VALUE
             )
+            instance = (
+                int(instances[image][featureid]
+                    ) if image in instances else NO_VALUE
+            )
+
             obs = pymap.Observation(
-                x, y, s, int(r), int(g), int(b), featureid, segmentation, instance
+                x,
+                y,
+                s,
+                int(r),
+                int(g),
+                int(b),
+                featureid,
+                segmentation,
+                instance,
             )
+            if image in depths:
+                depth_value = depths[image][featureid]
+                if not np.isnan(depth_value) and not np.isinf(depth_value):
+                    std = max(
+                        depth_std_deviation * depth_value,  # pyre-ignore
+                        depth_std_deviation,
+                    )
+                    obs.depth_prior = pymap.Depth(
+                        value=depth_value,  # pyre-ignore
+                        std_deviation=std,
+                        is_radial=depth_is_radial,
+                    )
+                    num_depth_priors += 1
             tracks_manager.add_observation(image, str(track_id), obs)
+            num_observations += 1
+    logger.info(
+        f"{len(tracks)} tracks, {num_observations} observations,"
+        f" {num_depth_priors} depth priors added to TracksManager"
+    )
     return tracks_manager
+
+
+def create_tracks_manager(
+    features: Dict[str, NDArray[np.float64]],
+    colors: Dict[str, NDArray[np.int32]],
+    segmentations: Dict[str, NDArray[np.int32]],
+    instances: Dict[str, NDArray[np.int32]],
+    matches: t.Union[
+        Dict[Tuple[str, str], List[Tuple[int, int]]],
+        Callable[[], t.Iterator[Tuple[Tuple[str, str], List[Tuple[int, int]]]]]
+    ],
+    min_length: int,
+    depths: Dict[str, NDArray[np.float64]],
+    depth_is_radial: bool = True,
+    depth_std_deviation: float = 1.0,
+) -> TracksManager:
+    """
+    Link matches into tracks.
+
+    If matches is a dict, it will be wrapped as an iterator.
+    If matches is a callable, it will be used directly.
+    """
+    if callable(matches):
+        matches_iter = matches
+    else:
+        def matches_iter():
+            return iter(matches.items())
+    return create_tracks_manager_from_matches_iter(
+        features,
+        colors,
+        segmentations,
+        instances,
+        matches_iter,
+        min_length,
+        depths,
+        depth_is_radial,
+        depth_std_deviation,
+    )
 
 
 def common_tracks(
     tracks_manager: pymap.TracksManager, im1: str, im2: str
-) -> t.Tuple[t.List[str], np.ndarray, np.ndarray]:
+) -> Tuple[List[str], NDArray[np.float64], NDArray[np.float64]]:
     """List of tracks observed in both images.
 
     Args:
@@ -129,34 +226,26 @@ def common_tracks(
     return tracks, p1, p2
 
 
-TPairTracks = t.Tuple[t.List[str], np.ndarray, np.ndarray]
-
-
-def all_common_tracks_with_features(
-    tracks_manager: pymap.TracksManager,
-    min_common: int = 50,
-) -> t.Dict[t.Tuple[str, str], TPairTracks]:
-    tracks = all_common_tracks(
-        tracks_manager, include_features=True, min_common=min_common
-    )
-    return t.cast(t.Dict[t.Tuple[str, str], TPairTracks], tracks)
+TPairTracks = Tuple[List[str], NDArray[np.float64], NDArray[np.float64]]
 
 
 def all_common_tracks_without_features(
     tracks_manager: pymap.TracksManager,
     min_common: int = 50,
-) -> t.Dict[t.Tuple[str, str], t.List[str]]:
+    processes: int = 1,
+) -> Dict[Tuple[str, str], List[str]]:
     tracks = all_common_tracks(
-        tracks_manager, include_features=False, min_common=min_common
+        tracks_manager, include_features=False, min_common=min_common, processes=processes
     )
-    return t.cast(t.Dict[t.Tuple[str, str], t.List[str]], tracks)
+    return cast(Dict[Tuple[str, str], List[str]], tracks)
 
 
 def all_common_tracks(
     tracks_manager: pymap.TracksManager,
     include_features: bool = True,
     min_common: int = 50,
-) -> t.Dict[t.Tuple[str, str], t.Union[TPairTracks, t.List[str]]]:
+    processes: int = 1,
+) -> Dict[Tuple[str, str], t.Union[TPairTracks, List[str]]]:
     """List of tracks observed by each image pair.
 
     Args:
@@ -169,20 +258,33 @@ def all_common_tracks(
         tuple: im1, im2 -> tuple: tracks, features from first image, features
         from second image
     """
-    common_tracks = {}
-    for (im1, im2), size in tracks_manager.get_all_pairs_connectivity().items():
+    def process_pair(pair):
+        im1, im2, size = pair
         if size < min_common:
-            continue
-
-        tuples = tracks_manager.get_all_common_observations(im1, im2)
+            return None
+        track_ids, points1, points2 = tracks_manager.get_all_common_observations_arrays(
+            im1, im2)
         if include_features:
-            common_tracks[im1, im2] = (
-                [v for v, _, _ in tuples],
-                np.array([p.point for _, p, _ in tuples]),
-                np.array([p.point for _, _, p in tuples]),
+            return (
+                (im1, im2),
+                (track_ids, points1, points2),
             )
         else:
-            common_tracks[im1, im2] = [v for v, _, _ in tuples]
+            return ((im1, im2), track_ids,)
+
+    logger.debug("Computing pairwise connectivity of images")
+    pairs = [(k[0], k[1], v)
+             for k, v in tracks_manager.get_all_pairs_connectivity().items()]
+
+    logger.debug(f"Gathering pairwise tracks with {processes} processes")
+    batch_size = max(1, len(pairs) // (2 * processes))
+    results = context.parallel_map(process_pair, pairs, processes, batch_size)
+
+    common_tracks = {}
+    for result in results:
+        if result is not None:
+            k, v = result
+            common_tracks[k] = v
     return common_tracks
 
 

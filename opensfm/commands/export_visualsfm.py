@@ -1,8 +1,10 @@
+# pyre-strict
+import argparse
+
 from opensfm.actions import export_visualsfm
+from opensfm.dataset import DataSet
 
 from . import command
-import argparse
-from opensfm.dataset import DataSet
 
 
 class Command(command.CommandBase):

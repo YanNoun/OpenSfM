@@ -1,16 +1,10 @@
+# pyre-strict
 import logging
 from abc import ABC, abstractmethod
-from typing import Dict, List, Tuple, Optional, IO, Any
+from typing import Any, BinaryIO, Dict, List, Optional, Tuple
 
-import numpy as np
-from opensfm import (
-    features,
-    geo,
-    io,
-    pygeometry,
-    types,
-    pymap,
-)
+from numpy.typing import NDArray
+from opensfm import features, geo, io, pygeometry, pymap, types
 
 logger: logging.Logger = logging.getLogger(__name__)
 
@@ -37,7 +31,7 @@ class DataSetBase(ABC):
         pass
 
     @abstractmethod
-    def open_image_file(self, image: str) -> IO[Any]:
+    def open_image_file(self, image: str) -> BinaryIO:
         pass
 
     @abstractmethod
@@ -47,7 +41,7 @@ class DataSetBase(ABC):
         unchanged: bool = False,
         anydepth: bool = False,
         grayscale: bool = False,
-    ) -> np.ndarray:
+    ) -> NDArray:
         pass
 
     @abstractmethod
@@ -55,19 +49,19 @@ class DataSetBase(ABC):
         pass
 
     @abstractmethod
-    def load_mask(self, image: str) -> Optional[np.ndarray]:
+    def load_mask(self, image: str) -> Optional[NDArray]:
         pass
 
     @abstractmethod
-    def load_instances(self, image: str) -> Optional[np.ndarray]:
+    def load_instances(self, image: str) -> Optional[NDArray]:
         pass
 
     @abstractmethod
-    def segmentation_labels(self) -> List[Any]:
+    def segmentation_labels(self) -> List[Dict[str, Any]]:
         pass
 
     @abstractmethod
-    def load_segmentation(self, image: str) -> Optional[np.ndarray]:
+    def load_segmentation(self, image: str) -> Optional[NDArray]:
         pass
 
     @abstractmethod
@@ -111,11 +105,11 @@ class DataSetBase(ABC):
         pass
 
     @abstractmethod
-    def load_words(self, image: str) -> np.ndarray:
+    def load_words(self, image: str) -> NDArray:
         pass
 
     @abstractmethod
-    def save_words(self, image: str, words: np.ndarray) -> None:
+    def save_words(self, image: str, words: NDArray) -> None:
         pass
 
     @abstractmethod
@@ -123,11 +117,11 @@ class DataSetBase(ABC):
         pass
 
     @abstractmethod
-    def load_matches(self, image: str) -> Dict[str, np.ndarray]:
+    def load_matches(self, image: str) -> Dict[str, NDArray]:
         pass
 
     @abstractmethod
-    def save_matches(self, image: str, matches: Dict[str, np.ndarray]) -> None:
+    def save_matches(self, image: str, matches: Dict[str, NDArray]) -> None:
         pass
 
     @abstractmethod
@@ -153,7 +147,7 @@ class DataSetBase(ABC):
         self,
         reconstruction: List[types.Reconstruction],
         filename: Optional[str] = None,
-        minify=False,
+        minify: bool = False,
     ) -> None:
         pass
 
@@ -243,6 +237,14 @@ class DataSetBase(ABC):
     def save_ground_control_points(
         self, points: List[pymap.GroundControlPoint]
     ) -> None:
+        pass
+
+    @abstractmethod
+    def load_stats(self) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
+    def save_stats(self, stats: Dict[str, Any]) -> None:
         pass
 
     def clean_up(self) -> None:

@@ -8,12 +8,27 @@ Using
 Quickstart
 ----------
 
-An example dataset is available at ``data/berlin``.  You can reconstruct it using by running::
+An example dataset is available at ``data/berlin``.  You can reconstruct it by running::
 
     bin/opensfm_run_all data/berlin
 
 This will run the entire SfM pipeline and produce the file ``data/berlin/reconstruction.meshed.json`` as output.
 
+Running in Docker
+'''''''''''''''''
+
+First, build the OpenSfM Docker image, as described under "building".
+
+
+Then, start a Docker container. The following command mounts the `data/` folder to `/data/` inside the Docker container::
+
+    docker run -it -p 8080:8080 -v ${PWD}/data/:/data/ opensfm.ubuntu24 /bin/bash
+
+Once inside the running Docker container, start the reconstruction process with the usual command::
+
+    bin/opensfm_run_all /data/berlin/
+
+When done, exit the container by pressing Ctrl+d. The model generated will be available in the `data/` catalogue.
 
 Viewer setup
 ''''''''''''
@@ -248,6 +263,20 @@ create_tracks
 ~~~~~~~~~~~~~
 This command links the matches between pairs of images to build feature point tracks.  The tracks are stored in the `tracks.csv` file.  A track is a set of feature points from different images that have been recognized to correspond to the same pysical point.
 
+Format of the data in the genrated tracks.csv file is as follows:
+
+image_name track_id feature_index normalized_x normalized_y size       R   G   B
+02.jpg	   1479	    2594	      0.0379803	   -0.0481853	0.00155505	155	145	143
+
+image_name -- name of the image file from which the data was extracted
+track_id -- id to keep 'track' of the tracks
+feature_index -- index of the keypoint from which this track is associated
+normalized_x -- x coordinate of the normalized images coordinate system
+normalized_y -- y coordinate of the normalized images coordinate system
+size -- size value according to the normalized images coordinate system
+R -- pixel value for Red channel
+G -- pixel value for Green channel
+B -- pixel value for Blue channel
 
 reconstruct
 ~~~~~~~~~~~
@@ -287,4 +316,4 @@ Checkout `the default configuration <_modules/opensfm/config.html>`_ to see the 
 
 
 .. include:: gcp.rst
-.. _fisheye https://docs.opencv.org/master/db/d58/group__calib3d__fisheye.html
+.. _fisheye: https://docs.opencv.org/master/db/d58/group__calib3d__fisheye.html

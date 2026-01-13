@@ -8,6 +8,7 @@
 #include <unordered_map>
 namespace map {
 class Shot;
+struct Observation;
 
 class Landmark {
  public:
@@ -21,11 +22,12 @@ class Landmark {
   void SetColor(const Vec3i& color) { color_ = color; }
 
   // Utility functions
-  void AddObservation(Shot* shot, const FeatureId& feat_id);
+  void AddObservation(Shot* shot, const Observation* observation);
   void RemoveObservation(Shot* shot);
   size_t NumberOfObservations() const;
   FeatureId GetObservationIdInShot(Shot* shot) const;
-  const std::map<Shot*, FeatureId, KeyCompare>& GetObservations() const;
+  const Observation& GetObservationInShot(Shot* shot) const;
+  const std::map<Shot*, const Observation*, KeyCompare>& GetObservations() const;
   void ClearObservations() { observations_.clear(); }
 
   // Comparisons
@@ -47,7 +49,7 @@ class Landmark {
 
  private:
   Vec3d global_pos_;  // point in global
-  std::map<Shot*, FeatureId, KeyCompare> observations_;
+  std::map<Shot*, const Observation*, KeyCompare> observations_;
   Vec3i color_;
   std::map<ShotId, Eigen::VectorXd> reproj_errors_;
 };

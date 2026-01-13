@@ -1,3 +1,4 @@
+# pyre-strict
 import logging
 import os
 
@@ -7,18 +8,16 @@ except ModuleNotFoundError:
     pass  # Windows
 import ctypes
 import sys
-from typing import Optional
+from typing import Callable, List, Optional, TypeVar
 
 import cv2
-from joblib import Parallel, delayed, parallel_backend
-
+from joblib import delayed, Parallel, parallel_backend
 
 logger: logging.Logger = logging.getLogger(__name__)
 
 
 abspath = os.path.dirname(os.path.realpath(__file__))
 SENSOR_DATA = os.path.join(abspath, "data", "sensor_data.json")
-SENSOR_DATA_DB = os.path.join(abspath, "data", "sensor_data.sqlite")
 CAMERA_CALIBRATION = os.path.join(abspath, "data", "camera_calibration.yaml")
 BOW_PATH = os.path.join(abspath, "data", "bow")
 
@@ -27,21 +26,22 @@ BOW_PATH = os.path.join(abspath, "data", "bow")
 OPENCV5: bool = int(cv2.__version__.split(".")[0]) >= 5
 OPENCV4: bool = int(cv2.__version__.split(".")[0]) >= 4
 OPENCV44: bool = (
-    int(cv2.__version__.split(".")[0]) == 4 and int(cv2.__version__.split(".")[1]) >= 4
+    int(cv2.__version__.split(".")[0]) == 4 and int(
+        cv2.__version__.split(".")[1]) >= 4
 )
 OPENCV3: bool = int(cv2.__version__.split(".")[0]) >= 3
 
+flann_Index: Optional[cv2.flann_Index] = None
 if hasattr(cv2, "flann_Index"):
     flann_Index = cv2.flann_Index
 elif hasattr(cv2, "flann") and hasattr(cv2.flann, "Index"):
     flann_Index = cv2.flann.Index
 else:
     logger.warning("Unable to find flann Index")
-    flann_Index = None
 
 
 # Parallel processes
-def parallel_map(func, args, num_proc: int, max_batch_size: int = 1, backend="threading"):
+def parallel_map(func, args, num_proc: int, max_batch_size: int = 1):
     """Run function for all arguments using multiple processes."""
     # De-activate/Restore any inner OpenCV threading
     threads_used = cv2.getNumThreads()
@@ -56,7 +56,8 @@ def parallel_map(func, args, num_proc: int, max_batch_size: int = 1, backend="th
             batch_size = (
                 min(batch_size, max_batch_size) if max_batch_size else batch_size
             )
-            res = Parallel(batch_size=batch_size)(delayed(func)(arg) for arg in args)
+            res = Parallel(batch_size=batch_size)(
+                delayed(func)(arg) for arg in args)
 
     cv2.setNumThreads(threads_used)
     return res
@@ -119,6 +120,14 @@ else:
 
     def current_memory_usage() -> int:
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * rusage_unit
+
+
+def log_memory(stage: str) -> int:
+    """Log memory usage at a given stage and return usage in KB."""
+    mem_kb = current_memory_usage()
+    mem_gb = mem_kb / 1024 / 1024 / 1024
+    logger.info(f"[Memory] {stage}: {mem_gb:.1f} GB")
+    return mem_kb
 
 
 def processes_that_fit_in_memory(desired: int, per_process: int) -> int:

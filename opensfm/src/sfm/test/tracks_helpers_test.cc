@@ -18,11 +18,11 @@ class TracksHelpersTest : public ::testing::Test {
     track["2"] = o2;
     track["3"] = o3;
 
-    connections_add.push_back("1");
-    connections_add.push_back("2");
-    connections_add.push_back("3");
+    connections_add.emplace_back("1");
+    connections_add.emplace_back("2");
+    connections_add.emplace_back("3");
 
-    connections_remove.push_back("1");
+    connections_remove.emplace_back("1");
   }
 
   map::TracksManager manager;
@@ -53,14 +53,4 @@ TEST_F(TracksHelpersTest, AddConnections) {
   EXPECT_EQ(3, counts.at("3"));
 }
 
-TEST_F(TracksHelpersTest, RemoveConnections) {
-  sfm::tracks_helpers::RemoveConnections(manager, "1", connections_remove);
-
-  const auto counts =
-      sfm::tracks_helpers::CountTracksPerShot(manager, {"1", "2", "3"}, {"1"});
-
-  EXPECT_EQ(0, counts.at("1"));
-  EXPECT_EQ(1, counts.at("2"));
-  EXPECT_EQ(1, counts.at("3"));
-}
 }  // namespace
