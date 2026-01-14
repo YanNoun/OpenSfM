@@ -17,7 +17,7 @@ jobs:
         run: docker build . --file Dockerfile.ubuntu24 --tag mapillary/opensfm.ubuntu24:$GITHUB_SHA
 
       - name: Run C++ tests
-        run: docker run mapillary/opensfm.ubuntu24:$GITHUB_SHA /bin/bash -c "source ~/.bashrc && conda activate opensfm && cd cmake_build && ctest --output-on-failure"
+        run: docker run mapillary/opensfm.ubuntu24:$GITHUB_SHA /bin/bash -c 'source ~/.bashrc && conda activate opensfm && cd cmake_build && ctest --output-on-failure'
 
       - name: Run Python tests
-        run: docker run mapillary/opensfm.ubuntu24:$GITHUB_SHA /bin/bash -c "source ~/.bashrc && conda activate opensfm && export LD_PRELOAD=$CONDA_PREFIX/lib/libtcmalloc.so && python -m pytest -v"
+        run: docker run mapillary/opensfm.ubuntu24:$GITHUB_SHA /bin/bash -c 'source ~/.bashrc && conda activate opensfm && export LD_PRELOAD=$CONDA_PREFIX/lib/libtcmalloc.so && python -m pytest -v'
