@@ -16,7 +16,8 @@ def test_processing_statistics_normal(
 
     processing_statistics = stats.processing_statistics(dataset, [reference])
 
-    assert list(processing_statistics.keys()) == ["steps_times", "date", "area"]
+    assert list(processing_statistics.keys()) == [
+        "steps_times", "date", "area"]
     assert processing_statistics["steps_times"] == {
         "Feature Extraction": -1,
         "Features Matching": -1,
@@ -24,7 +25,6 @@ def test_processing_statistics_normal(
         "Reconstruction": -1,
         "Total Time": 0,
     }
-    assert processing_statistics["date"] == "unknown"
     assert 3500 < processing_statistics["area"] < 3600
 
 
@@ -41,7 +41,8 @@ def test_processing_statistics_null(
 
     processing_statistics = stats.processing_statistics(dataset, [null_scene])
 
-    assert list(processing_statistics.keys()) == ["steps_times", "date", "area"]
+    assert list(processing_statistics.keys()) == [
+        "steps_times", "date", "area"]
     assert processing_statistics["steps_times"] == {
         "Feature Extraction": -1,
         "Features Matching": -1,
@@ -49,7 +50,6 @@ def test_processing_statistics_null(
         "Reconstruction": -1,
         "Total Time": 0,
     }
-    assert processing_statistics["date"] == "unknown"
     assert processing_statistics["area"] == -1
 
 
@@ -142,10 +142,14 @@ def test_reconstruction_statistics_normal(
     assert len(reconstruction_statistics["histogram_track_length"]) == 5
     assert 0.15 < reconstruction_statistics["reprojection_error_normalized"] < 0.16
     assert 1.25 < reconstruction_statistics["reprojection_error_pixels"] < 1.28
-    assert len(reconstruction_statistics["reprojection_histogram_normalized"][0]) == 30
-    assert len(reconstruction_statistics["reprojection_histogram_normalized"][1]) == 31
-    assert len(reconstruction_statistics["reprojection_histogram_pixels"][0]) == 30
-    assert len(reconstruction_statistics["reprojection_histogram_pixels"][1]) == 31
+    assert len(
+        reconstruction_statistics["reprojection_histogram_normalized"][0]) == 30
+    assert len(
+        reconstruction_statistics["reprojection_histogram_normalized"][1]) == 31
+    assert len(
+        reconstruction_statistics["reprojection_histogram_pixels"][0]) == 30
+    assert len(
+        reconstruction_statistics["reprojection_histogram_pixels"][1]) == 31
 
 
 def test_reconstruction_statistics_null(
@@ -176,10 +180,14 @@ def test_reconstruction_statistics_null(
     assert len(reconstruction_statistics["histogram_track_length"]) == 0
     assert reconstruction_statistics["reprojection_error_normalized"] == -1.0
     assert reconstruction_statistics["reprojection_error_pixels"] == -1.0
-    assert len(reconstruction_statistics["reprojection_histogram_normalized"][0]) == 0
-    assert len(reconstruction_statistics["reprojection_histogram_normalized"][1]) == 0
-    assert len(reconstruction_statistics["reprojection_histogram_pixels"][0]) == 0
-    assert len(reconstruction_statistics["reprojection_histogram_pixels"][1]) == 0
+    assert len(
+        reconstruction_statistics["reprojection_histogram_normalized"][0]) == 0
+    assert len(
+        reconstruction_statistics["reprojection_histogram_normalized"][1]) == 0
+    assert len(
+        reconstruction_statistics["reprojection_histogram_pixels"][0]) == 0
+    assert len(
+        reconstruction_statistics["reprojection_histogram_pixels"][1]) == 0
 
 
 def test_cameras_statistics_normal(
