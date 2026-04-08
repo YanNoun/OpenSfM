@@ -128,6 +128,30 @@ def scene_synthetic_triangulation() -> synthetic_scene.SyntheticInputData:
 
 
 @pytest.fixture(scope="module")
+def scene_synthetic_rig_triangulation() -> synthetic_scene.SyntheticInputData:
+    np.random.seed(42)
+    reference = geo.TopocentricConverter(47.0, 6.0, 0)
+    data = synthetic_examples.synthetic_rig_scene(reference)
+
+    maximum_depth = 40
+    projection_noise = 1.0
+    gps_noise = 0.1
+    imu_noise = 0.1
+    gcp_noise = (0.0, 0.0)
+
+    return synthetic_scene.SyntheticInputData(
+        data.get_reconstruction(),
+        reference,
+        maximum_depth,
+        projection_noise,
+        gps_noise,
+        imu_noise,
+        gcp_noise,
+        False,
+    )
+
+
+@pytest.fixture(scope="module")
 def pairs_and_poses() -> (
     Tuple[
         Dict[Tuple[str, str], List[Tuple[List[NDArray]]]],
@@ -169,7 +193,8 @@ def pairs_and_their_E(
 ) -> List[Tuple[NDArray, NDArray, NDArray, pygeometry.Pose]]:
     pairs, poses, camera, _, _, _ = pairs_and_poses
 
-    pairs = sorted(zip(pairs.values(), poses.values()), key=lambda x: -len(x[0]))
+    pairs = sorted(zip(pairs.values(), poses.values()),
+                   key=lambda x: -len(x[0]))
 
     num_pairs = 20
     indices = [np.random.randint(0, len(pairs) - 1) for i in range(num_pairs)]

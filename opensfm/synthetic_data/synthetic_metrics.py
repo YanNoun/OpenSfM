@@ -51,7 +51,8 @@ def gcp_errors(
         if not gcp.lla:
             continue
 
-        triangulated = multiview.triangulate_gcp(gcp, candidate.shots, 1.0, 0.1)
+        triangulated = multiview.triangulate_gcp(
+            gcp, candidate.shots, 1.0, 0.1)
         if triangulated is None:
             continue
 
@@ -63,7 +64,8 @@ def gcp_errors(
 def position_errors(
     reference: types.Reconstruction, candidate: types.Reconstruction
 ) -> NDArray:
-    common_shots = set(reference.shots.keys()).intersection(set(candidate.shots.keys()))
+    common_shots = set(reference.shots.keys()).intersection(
+        set(candidate.shots.keys()))
     errors = []
     for s in common_shots:
         pose1 = reference.shots[s].pose.get_origin()
@@ -75,7 +77,8 @@ def position_errors(
 def rotation_errors(
     reference: types.Reconstruction, candidate: types.Reconstruction
 ) -> NDArray:
-    common_shots = set(reference.shots.keys()).intersection(set(candidate.shots.keys()))
+    common_shots = set(reference.shots.keys()).intersection(
+        set(candidate.shots.keys()))
     errors = []
     for s in common_shots:
         pose1 = reference.shots[s].pose.get_rotation_matrix()
@@ -143,7 +146,8 @@ def change_geo_reference(
     This assumes that the new lla is close enough that rotation differences
     between references can be ignored.
     """
-    t_old_new = reconstruction.reference.to_topocentric(latitude, longitude, altitude)
+    t_old_new = reconstruction.reference.to_topocentric(
+        latitude, longitude, altitude)
 
     s = 1.0
     A = np.eye(3)
@@ -155,6 +159,77 @@ def change_geo_reference(
         if shot.metadata.gps_position.has_value:
             shot.metadata.gps_position.value = shot.metadata.gps_position.value + b
     return aligned
+
+
+def rig_camera_rotation_errors(
+    reference: types.Reconstruction, candidate: types.Reconstruction
+) -> NDArray:
+    """Per-rig-camera angle-axis rotation error norm."""
+    errors = []
+    for rig_camera_id, ref_rig_camera in reference.rig_cameras.items():
+        if rig_camera_id not in candidate.rig_cameras:
+            continue
+        rec_rig_camera = candidate.rig_cameras[rig_camera_id]
+        errors.append(
+            np.linalg.norm(
+                ref_rig_camera.pose.rotation - rec_rig_camera.pose.rotation
+            )
+        )
+    return np.array(errors)
+
+
+def rig_camera_translation_errors(
+    reference: types.Reconstruction, candidate: types.Reconstruction
+) -> NDArray:
+    """Per-rig-camera translation error norm."""
+    errors = []
+    for rig_camera_id, ref_rig_camera in reference.rig_cameras.items():
+        if rig_camera_id not in candidate.rig_cameras:
+            continue
+        rec_rig_camera = candidate.rig_cameras[rig_camera_id]
+        errors.append(
+            np.linalg.norm(
+                ref_rig_camera.pose.translation - rec_rig_camera.pose.translation
+            )
+        )
+    return np.array(errors)
+
+
+def rig_shot_assignment_errors(
+    reference: types.Reconstruction, candidate: types.Reconstruction
+) -> NDArray:
+    """Binary array (1 correct, 0 wrong) for each common shot's rig assignment."""
+    errors = []
+    for shot_id, ref_shot in reference.shots.items():
+        if shot_id not in candidate.shots:
+            continue
+        rec_shot = candidate.shots[shot_id]
+        correct = (
+            rec_shot.rig_camera_id == ref_shot.rig_camera_id
+            and rec_shot.rig_instance_id == ref_shot.rig_instance_id
+        )
+        errors.append(1.0 if correct else 0.0)
+    return np.array(errors)
+
+
+def rig_instance_assignment_errors(
+    reference: types.Reconstruction, candidate: types.Reconstruction
+) -> NDArray:
+    """Binary array (1 correct, 0 wrong) for each reference rig instance."""
+    errors = []
+    for instance_id, ref_instance in reference.rig_instances.items():
+        if instance_id not in candidate.rig_instances:
+            errors.append(0.0)
+            continue
+        rec_instance = candidate.rig_instances[instance_id]
+        correct = set(rec_instance.rig_camera_ids.keys()) == set(
+            ref_instance.rig_camera_ids.keys()
+        ) and all(
+            rec_instance.rig_camera_ids[s] == ref_instance.rig_camera_ids[s]
+            for s in ref_instance.rig_camera_ids
+        )
+        errors.append(1.0 if correct else 0.0)
+    return np.array(errors)
 
 
 def rmse(errors: NDArray) -> float:

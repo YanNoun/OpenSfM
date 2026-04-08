@@ -90,7 +90,8 @@ class SyntheticCubeScene(SyntheticScene):
         self.reconstruction = types.Reconstruction()
         self.cameras: Dict[str, pygeometry.Camera] = {}
         for i in range(num_cameras):
-            camera = camera = pygeometry.Camera.create_perspective(0.9, -0.1, 0.01)
+            camera = camera = pygeometry.Camera.create_perspective(
+                0.9, -0.1, 0.01)
             camera.id = "camera%04d" % i
             camera.height = 600
             camera.width = 800
@@ -200,7 +201,7 @@ class SyntheticStreetScene(SyntheticScene):
         shift = 0
         for subshots in combined_scene.shot_ids:
             for i in range(len(subshots)):
-                subshots[i] = f"Shot {i+shift:04d}"
+                subshots[i] = f"Shot {i + shift:04d}"
             shift += len(subshots)
         return combined_scene
 
@@ -299,8 +300,9 @@ class SyntheticStreetScene(SyntheticScene):
         if positions_shift:
             positions += np.array(positions_shift)
 
-        shift = 0 if len(self.shot_ids) == 0 else sum(len(s) for s in self.shot_ids)
-        new_shot_ids = [f"Shot {shift+i:04d}" for i in range(len(positions))]
+        shift = 0 if len(self.shot_ids) == 0 else sum(len(s)
+                                                      for s in self.shot_ids)
+        new_shot_ids = [f"Shot {shift + i:04d}" for i in range(len(positions))]
         self.shot_ids.append(new_shot_ids)
         self.cameras.append([camera])
 
@@ -364,7 +366,7 @@ class SyntheticStreetScene(SyntheticScene):
             camera_shot_ids = []
             for i in range(len(positions)):
                 shot_index = i * len(relative_positions) + j
-                camera_shot_ids.append(f"Shot {shift+shot_index:04d}")
+                camera_shot_ids.append(f"Shot {shift + shot_index:04d}")
             shots_ids_per_camera.append(camera_shot_ids)
         self.cameras.append(cameras)
         self.shot_ids += shots_ids_per_camera
@@ -389,7 +391,8 @@ class SyntheticStreetScene(SyntheticScene):
         for i in range(len(instances_positions)):
             instance = []
             for j in range(len(shots_ids_per_camera)):
-                instance.append((shots_ids_per_camera[j][i], rig_camera_ids[j]))
+                instance.append(
+                    (shots_ids_per_camera[j][i], rig_camera_ids[j]))
             rig_instances.append(instance)
         self.rig_instances.append(rig_instances)
         self.instances_positions.append(instances_positions)
@@ -404,7 +407,8 @@ class SyntheticStreetScene(SyntheticScene):
         return sg.create_reconstruction(
             # pyre-fixme[6]: For 1st argument expected `List[ndarray[typing.Any,
             #  typing.Any]]` but got `ndarray[typing.Any, dtype[typing.Any]]`.
-            points=np.asarray([self.floor_points, self.wall_points], dtype=object),
+            points=np.asarray(
+                [self.floor_points, self.wall_points], dtype=object),
             # pyre-fixme[6]: For 2nd argument expected `List[ndarray[typing.Any,
             #  typing.Any]]` but got `ndarray[typing.Any, dtype[typing.Any]]`.
             colors=np.asarray([floor_color, wall_color]),
@@ -484,7 +488,8 @@ def compare(
 
     completeness = sm.completeness_errors(reference, reconstruction)
 
-    geo_referenced = sm.change_geo_reference(reconstruction, geo.lat, geo.lon, geo.alt)
+    geo_referenced = sm.change_geo_reference(
+        reconstruction, geo.lat, geo.lon, geo.alt)
     absolute_position = sm.position_errors(reference, geo_referenced)
     absolute_rotation = sm.rotation_errors(reference, geo_referenced)
     absolute_points = sm.points_errors(reference, geo_referenced)
@@ -496,6 +501,14 @@ def compare(
     aligned_rotation = sm.rotation_errors(reference, aligned)
     aligned_points = sm.points_errors(reference, aligned)
     aligned_gps = sm.gps_errors(aligned)
+
+    rig_cam_rotation = sm.rig_camera_rotation_errors(reference, geo_referenced)
+    rig_cam_translation = sm.rig_camera_translation_errors(
+        reference, geo_referenced)
+    rig_shot_assignment = sm.rig_shot_assignment_errors(
+        reference, geo_referenced)
+    rig_instance_assignment = sm.rig_instance_assignment_errors(
+        reference, geo_referenced)
 
     return {
         "ratio_cameras": completeness[0],
@@ -522,4 +535,16 @@ def compare(
         "aligned_gps_mad": sm.mad(aligned_gps),
         "aligned_points_rmse": sm.rmse(aligned_points),
         "aligned_points_mad": sm.mad(aligned_points),
+        "rig_camera_rotation_rmse": sm.rmse(rig_cam_rotation)
+        if len(rig_cam_rotation) > 0
+        else 0.0,
+        "rig_camera_translation_rmse": sm.rmse(rig_cam_translation)
+        if len(rig_cam_translation) > 0
+        else 0.0,
+        "rig_shot_assignment_ratio": float(np.mean(rig_shot_assignment))
+        if len(rig_shot_assignment) > 0
+        else 1.0,
+        "rig_instance_assignment_ratio": float(np.mean(rig_instance_assignment))
+        if len(rig_instance_assignment) > 0
+        else 1.0,
     }

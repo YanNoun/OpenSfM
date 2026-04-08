@@ -66,7 +66,14 @@ def test_reconstruction_incremental_rig(
     _, reconstructed_scene = reconstruction.incremental_reconstruction(
         dataset, scene_synthetic_rig.tracks_manager
     )
+
     errors = synthetic_scene.compare(reference, {}, reconstructed_scene[0])
+
+    assert errors["rig_camera_rotation_rmse"] < 1e-10
+    assert errors["rig_camera_translation_rmse"] < 1e-10
+
+    assert errors["rig_shot_assignment_ratio"] == 1.0
+    assert errors["rig_instance_assignment_ratio"] == 1.0
 
     assert reconstructed_scene[0].reference.lat == 47.0
     assert reconstructed_scene[0].reference.lon == 6.0

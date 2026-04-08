@@ -1,7 +1,7 @@
 # pyre-strict
 import logging
 import math
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set
 
 import numpy as np
 from numpy.typing import NDArray
@@ -49,7 +49,8 @@ def shot_gravity_up_in_image_axis(shot: pymap.Shot) -> Optional[NDArray]:
     orientation = shot.metadata.orientation.value
     if not 1 <= orientation <= 8:
         logger.error(
-            "Unknown orientation tag {} for image {}".format(orientation, shot.id)
+            "Unknown orientation tag {} for image {}".format(
+                orientation, shot.id)
         )
         orientation = 1
     return guess_gravity_up_from_orientation_tag(orientation)
@@ -86,12 +87,27 @@ def reconstruction_from_metadata(
 ) -> types.Reconstruction:
     """Initialize a reconstruction by using EXIF data for constructing shot poses and cameras."""
     data.init_reference()
-    rig_assignments = rig.rig_assignments_per_image(data.load_rig_assignments())
+    rig_assignments = rig.rig_assignments_per_image(
+        data.load_rig_assignments())
+    rig_camera_priors = data.load_rig_cameras()
 
     reconstruction = types.Reconstruction()
     reconstruction.reference = data.load_reference()
     reconstruction.cameras = data.load_camera_models()
+
+    for rig_camera_id, rig_camera in rig_camera_priors.items():
+        reconstruction.add_rig_camera(rig_camera)
+
+    shot_poses: Dict[str, pygeometry.Pose] = {}
+
+    all_images: Set[str] = set()
     for image in images:
+        all_images.add(image)
+        if image in rig_assignments:
+            _, _, instance_shots = rig_assignments[image]
+            all_images.update(instance_shots)
+
+    for image in all_images:
         camera_id = data.load_exif(image)["camera"]
 
         if image in rig_assignments:
@@ -100,8 +116,14 @@ def reconstruction_from_metadata(
             rig_instance_id = image
             rig_camera_id = camera_id
 
-        reconstruction.add_rig_camera(pymap.RigCamera(pygeometry.Pose(), rig_camera_id))
-        reconstruction.add_rig_instance(pymap.RigInstance(rig_instance_id))
+        if rig_camera_id not in reconstruction.rig_cameras:
+            reconstruction.add_rig_camera(
+                pymap.RigCamera(pygeometry.Pose(), rig_camera_id)
+            )
+
+        if rig_instance_id not in reconstruction.rig_instances:
+            reconstruction.add_rig_instance(pymap.RigInstance(rig_instance_id))
+
         shot = reconstruction.create_shot(
             shot_id=image,
             camera_id=camera_id,
@@ -116,11 +138,22 @@ def reconstruction_from_metadata(
             continue
         gps_pos = shot.metadata.gps_position.value
 
+        pose = pygeometry.Pose()
         rotation = rotation_from_shot_metadata(shot)
         if rotation is not None:
-            shot.pose.set_rotation_matrix(rotation)
-        shot.pose.set_origin(gps_pos)
+            pose.set_rotation_matrix(rotation)
+        pose.set_origin(gps_pos)
         shot.scale = 1.0
+        shot_poses[image] = pose
+
+    for rig_instance in reconstruction.rig_instances.values():
+        for shot_id in rig_instance.shots:
+            if shot_id in shot_poses:
+                rig_instance.update_instance_pose_with_shot(
+                    shot_id, shot_poses[shot_id]
+                )
+                break
+
     return reconstruction
 
 
