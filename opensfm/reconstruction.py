@@ -1431,7 +1431,7 @@ class ResectionCandidates:
             for shot_id, shot_candidates in self.candidates.items():
                 if track_id in shot_candidates:
                     shot_candidates.remove(track_id)
-            self.tracks.remove(track_id)
+            self.tracks.discard(track_id)
 
     def get_candidates(self, images: Set[str]) -> List[Tuple[str, int]]:
         """Get sorted candidates for resection."""
