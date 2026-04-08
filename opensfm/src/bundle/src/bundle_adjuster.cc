@@ -1137,9 +1137,7 @@ void BundleAdjuster::Run() {
 
   ceres::Solve(options, &problem, &last_run_summary_);
 
-  std::cout << last_run_summary_.FullReport() << std::endl;
-
-    if (compute_covariances_) {
+  if (compute_covariances_) {
     ComputeCovariances(&problem);
   }
   if (compute_reprojection_errors_) {
